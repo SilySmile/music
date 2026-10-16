@@ -26,7 +26,8 @@ async function main() {
     assert.equal(Number(head.headers.get('content-length')), artifact.size);
     const handle = await fs.open(local, 'r');
     try {
-      for (const offset of [0, 8 * 1024 * 1024]) {
+      const resumeOffset = Math.min(8 * 1024 * 1024, Math.max(0, artifact.size - 1024));
+      for (const offset of new Set([0, resumeOffset])) {
         const length = Math.min(1024, artifact.size - offset);
         const range = await request(url, { headers: { Range: `bytes=${offset}-${offset + length - 1}`, 'Accept-Encoding': 'identity' } });
         assert.equal(range.status, 206);
@@ -37,7 +38,7 @@ async function main() {
       }
     } finally { await handle.close(); }
     artifacts.push({ platform, size: artifact.size, sha256: artifact.sha256, httpsRangeVerified: true });
-    console.log(`PASS ${platform}: signed local SHA-256, HTTPS length, first-byte and 8 MB Range`);
+    console.log(`PASS ${platform}: signed local SHA-256, HTTPS length, initial and resumed Range`);
   }
   await fs.mkdir(path.join(root, 'test-results'), { recursive: true });
   await fs.writeFile(path.join(root, 'test-results/published-update-check.json'), JSON.stringify({ checkedAt: new Date().toISOString(), baseUrl: trust.defaultBaseUrl, version: release.version, signatureVerified: true, artifacts }, null, 2));
