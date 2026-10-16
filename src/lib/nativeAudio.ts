@@ -2,7 +2,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import type { StoredTrack } from '../types';
 const urls = new WeakMap<Blob, string>();
 
-export function nativeAudio(record: StoredTrack): Blob {
+export function nativeAudio(record: StoredTrack, reader = (id: string, kind: 'audio' | 'cover', offset: number, length: number) => window.tingyuDesktop!.readLibraryChunk(id, kind, offset, length), url = `xianqiji://library/${encodeURIComponent(record.metadata.id)}/audio`): Blob {
   const media = record.audio;
   class AudioFile extends Blob {
     constructor(private startOffset = 0, private endOffset = media.size, contentType = media.type) { super([], { type: contentType }); }
@@ -15,7 +15,7 @@ export function nativeAudio(record: StoredTrack): Blob {
     async arrayBuffer(): Promise<ArrayBuffer> {
       const output = new Uint8Array(this.size);
       for (let offset = 0; offset < this.size; offset += 4 * 1024 * 1024) {
-        const bytes = new Uint8Array(await window.tingyuDesktop!.readLibraryChunk(record.metadata.id, 'audio', this.startOffset + offset, Math.min(4 * 1024 * 1024, this.size - offset)));
+        const bytes = new Uint8Array(await reader(record.metadata.id, 'audio', this.startOffset + offset, Math.min(4 * 1024 * 1024, this.size - offset)));
         if (bytes.length !== Math.min(4 * 1024 * 1024, this.size - offset)) throw new Error('音频文件不完整，请恢复备份。');
         output.set(bytes, offset);
       }
@@ -34,7 +34,7 @@ export function nativeAudio(record: StoredTrack): Blob {
     }
   }
   const blob = new AudioFile();
-  urls.set(blob, `xianqiji://library/${encodeURIComponent(record.metadata.id)}/audio`);
+  urls.set(blob, url);
   return blob;
 }
 export function nativeAudioUrl(blob: Blob) { return urls.get(blob); }

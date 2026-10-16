@@ -1,7 +1,7 @@
 {
   "name": "tingyu-music",
   "productName": "弦栖霁",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "private": true,
   "type": "module",
   "description": "弦栖霁 · 本地音乐与离线双语歌词播放器",
@@ -18,6 +18,12 @@
     "demo": "node scripts/make-demo.mjs",
     "release:create": "node scripts/create-update-release.cjs",
     "release:publish": "node scripts/publish-update.cjs",
+    "publish:check": "node scripts/release-one-click.cjs --check",
+    "publish:prepare": "node scripts/release-one-click.cjs --prepare --interactive",
+    "publish:all": "node scripts/release-one-click.cjs --publish --interactive",
+    "publish:resume": "node scripts/release-one-click.cjs --resume --interactive",
+    "test:release": "node scripts/check-release-pipeline.cjs",
+    "source:package": "node scripts/package-library-server.cjs",
     "android:sign-release": "node scripts/sign-android-release.cjs"
   },
   "dependencies": {

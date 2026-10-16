@@ -47,6 +47,7 @@ const shortcuts = require('./shortcuts.cjs')({ directory: dataPath, globalShortc
   else mainWindow?.webContents.send('tray:control', { action });
 } });
 const desktopPointer = require('./desktop-pointer.cjs')({ getWindow: () => desktopWindow, getState: () => desktopState, getCursor: () => screen.getCursorScreenPoint() });
+const onlineSource = require('./online-source.cjs')({ directory: dataPath, safeStorage, fetch: (...parameters) => net.fetch(...parameters) });
 
 function persistPreferences() {
   const contents = JSON.stringify({ ...desktopState, bounds: desktopBounds, layoutBounds: desktopLayoutBounds, appPreferences });
@@ -217,6 +218,9 @@ function installIpc() {
   require('./library-ipc.cjs')({ app, ipcMain, dialog, shell, requireWindow, getWindow: () => mainWindow });
   require('./transfers.cjs')({ app, ipcMain, dialog, shell, requireWindow, getWindow: () => mainWindow, testing });
   const keyPath = path.join(app.getPath('userData'), 'ai-config.json');
+  ipcMain.handle('source:get-config', (event) => { requireWindow(event, true); return onlineSource.get(); });
+  ipcMain.handle('source:save-config', (event, value) => { requireWindow(event, true); return onlineSource.save(value); });
+  ipcMain.handle('source:request', (event, request) => { requireWindow(event, true); return onlineSource.request(request); });
   const legacyKeyPath = path.join(app.getPath('userData'), 'translation-key.bin');
   ipcMain.handle('shortcuts:get', (event) => { requireWindow(event, true); return shortcuts.get(); });
   ipcMain.handle('shortcuts:save', (event, value) => { requireWindow(event, true); return shortcuts.save(value); });

@@ -1,0 +1,26 @@
+[Unit]
+Description=Xianqiji private online music library
+After=network.target
+
+[Service]
+Type=simple
+User=xq-library
+Group=xq-library
+WorkingDirectory=/srv/xianqiji-library
+Environment=XQ_LIBRARY_DATA=/srv/xianqiji-library
+Environment=XQ_LIBRARY_AUTH=/etc/xianqiji-library/auth.json
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /usr/local/libexec/xianqiji-library.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWriteDirectories=/srv/xianqiji-library
+MemoryLimit=384M
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

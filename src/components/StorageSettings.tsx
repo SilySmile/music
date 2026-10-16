@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { FolderOpen, FolderSync, HardDrive, LoaderCircle } from 'lucide-react';
 import type { LibraryInfo, LibraryProgress } from '../types';
+import { isAndroidLibrary } from '../lib/androidLibrary';
+import AndroidStorageSettings from './AndroidStorageSettings';
 
-export default function StorageSettings({ onError, onExport, onChanged }: { onError(message: string): void; onExport(): void; onChanged(): Promise<void> }) {
+export default function StorageSettings({ onError, onExport, onChanged, blocked = false, trackCount = 0 }: { onError(message: string): void; onExport(): void; onChanged(): Promise<void>; blocked?: boolean; trackCount?: number }) {
   const [info, setInfo] = useState<LibraryInfo | null>(null);
   const [selected, setSelected] = useState('');
   const [existing, setExisting] = useState<{ path: string; trackCount: number } | null>(null);
@@ -43,6 +45,7 @@ export default function StorageSettings({ onError, onExport, onChanged }: { onEr
       window.dispatchEvent(new CustomEvent('tingyu-library-switching', { detail: false })); setWorking(false);
     }
   }
+  if (!bridge && isAndroidLibrary()) return <AndroidStorageSettings blocked={blocked} trackCount={trackCount} onError={onError} />;
   return <section className="storage-settings"><h3><HardDrive size={16} />音乐库保存路径</h3>{bridge ? <>
     <label>当前音乐库<input aria-label="当前音乐库路径" value={info?.path || '正在读取…'} readOnly /></label>
     <label>全部应用数据<input aria-label="全部应用数据路径" value={info?.internalPath || '正在读取…'} readOnly /></label>

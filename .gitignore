@@ -20,9 +20,12 @@ test-results/
 *.pfx
 *.jks
 *.keystore
+*.xqsource
 **/Data/
 **/音乐库/
 android/.kotlin/
 /docs/更新服务部署与发布指南.md
 /docs/音乐库切换使用说明.md
 /docs/正式版v1.0.0交付说明.md
+/docs/在线曲库部署记录.md
+deployment/__pycache__/

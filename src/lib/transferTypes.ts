@@ -1,5 +1,6 @@
 export type TransferStatus = 'running' | 'paused' | 'failed' | 'completed';
 export type ImportTask = {
+  libraryKey?: string;
   id: string;
   kind: 'import';
   label: string;
@@ -26,6 +27,7 @@ export type ZipCheckpoint = {
   centralOffset: number;
 };
 export type ExportTask = {
+  libraryKey?: string;
   id: string;
   kind: 'export';
   label: string;

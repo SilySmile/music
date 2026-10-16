@@ -52,11 +52,14 @@ export type ShortcutConfig = { enabled: boolean; bindings: Record<string, string
 export type AIRequest = { url: string; key: string; body: Record<string, unknown> };
 export type LibraryInfo = { path: string; previousPath: string; internalPath: string; trackCount: number; legacyMigrated: boolean; moving: boolean; error?: string };
 export type LibraryProgress = { stage: string; completed: number; total: number };
-export type StoredTrack = { metadata: Omit<Track, 'audio' | 'cover'>; audio: { file: string; size: number; type: string; sha256: string }; cover?: { file: string; size: number; type: string; sha256: string } };
+export type StoredTrack = { metadata: Omit<Track, 'audio' | 'cover'>; audio: { file: string; size: number; type: string; sha256: string; uri?: string }; cover?: { file: string; size: number; type: string; sha256: string } };
 
 declare global {
   interface Window {
     tingyuDesktop?: {
+      getSourceConfig(): Promise<import('./lib/onlineSource').SourceConfig>;
+      saveSourceConfig(value: import('./lib/onlineSource').SourceConfig): Promise<import('./lib/onlineSource').SourceConfig>;
+      requestSource(request: import('./lib/onlineSource').SourceRequest): Promise<{ status: number; data: unknown }>;
       updateConfig(): Promise<import('./lib/appUpdates').UpdateConfig>;
       saveUpdateConfig(value: { baseUrl: string; autoCheck: boolean }): Promise<import('./lib/appUpdates').UpdateConfig>;
       checkUpdate(): Promise<import('./lib/appUpdates').UpdateState>;

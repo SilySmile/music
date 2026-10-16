@@ -1,0 +1,325 @@
+package com.tingyu.music;
+
+import android.app.Activity;
+import android.content.Intent;
+import android.net.Uri;
+import android.provider.DocumentsContract;
+import android.util.AtomicFile;
+import android.util.Base64;
+import androidx.activity.result.ActivityResult;
+import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+@CapacitorPlugin(name = "DocumentLibrary")
+public class DocumentLibraryPlugin extends Plugin {
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final AtomicBoolean selecting = new AtomicBoolean(false);
+    private final Map<String, LibraryDocuments.Node> candidates = new HashMap<>();
+    private final Map<String, Upload> uploads = new HashMap<>();
+    private LibraryDocuments documents;
+    private interface Operation { JSObject run() throws Exception; }
+    private static final class Upload {
+        LibraryDocuments.Node root;
+        LibraryDocuments.Node directory;
+        JSONObject metadata;
+        JSONObject record;
+        Map<String, Long> offsets = new HashMap<>();
+    }
+
+    @Override public void load() { documents = new LibraryDocuments(getContext().getContentResolver()); }
+    @Override protected void handleOnDestroy() { worker.shutdownNow(); }
+    private void run(PluginCall call, Operation operation) {
+        worker.execute(() -> { try { documents.reset(); call.resolve(operation.run()); } catch (Exception error) { call.reject(error.getMessage() == null ? "音乐库操作失败，原曲库未删除" : error.getMessage()); } });
+    }
+    private JSObject result(JSONObject value) throws Exception { return new JSObject(value.toString()); }
+    private File configFile() { return new File(getContext().getFilesDir(), "config/library-location.json"); }
+    private JSONObject config() throws Exception {
+        AtomicFile file = new AtomicFile(configFile());
+        if (!file.getBaseFile().exists() && !new File(configFile() + ".bak").exists()) return new JSONObject();
+        return new JSONObject(new String(file.readFully(), StandardCharsets.UTF_8));
+    }
+    private void saveConfig(JSONObject value) throws Exception {
+        File file = configFile();
+        if (!file.getParentFile().isDirectory() && !file.getParentFile().mkdirs()) throw new Exception("无法保存曲库配置");
+        AtomicFile atomic = new AtomicFile(file); FileOutputStream output = null;
+        try { output = atomic.startWrite(); output.write(value.toString().getBytes(StandardCharsets.UTF_8)); atomic.finishWrite(output); }
+        catch (Exception error) { if (output != null) atomic.failWrite(output); throw error; }
+    }
+    private LibraryDocuments.Node root(String target) throws Exception {
+        if (target != null) {
+            LibraryDocuments.Node candidate = candidates.get(target);
+            if (candidate == null) throw new Exception("文件夹选择已失效，请重新选择");
+            return candidate;
+        }
+        String location = config().optString("uri");
+        if (location.isEmpty()) throw new Exception("当前使用内部数据库，请先选择音乐库文件夹");
+        return documents.inspect(Uri.parse(location));
+    }
+    private JSONObject index(LibraryDocuments.Node root) throws Exception {
+        String text = documents.readIndex(root, "library.json");
+        if (text == null) throw new Exception("未找到 library.json，请选择完整音乐库；普通歌曲文件夹请先导入");
+        JSONObject index = new JSONObject(text);
+        if (!"xianqiji-library-folder".equals(index.optString("format")) || index.optInt("version") != 1 || index.optString("libraryId").isEmpty() || !(index.opt("tracks") instanceof JSONObject)) throw new Exception("不支持或已损坏的曲库清单，未覆盖文件");
+        return index;
+    }
+    private JSONObject cache(LibraryDocuments.Node root) throws Exception {
+        String text = documents.readIndex(root, "translations-cache.json");
+        JSONObject cache = text == null ? new JSONObject() : new JSONObject(text);
+        Iterator<String> keys = cache.keys();
+        while (keys.hasNext()) if (!(cache.get(keys.next()) instanceof String)) throw new Exception("译文缓存格式错误，未覆盖");
+        return cache;
+    }
+    private JSONObject metadata(JSONObject value) throws Exception {
+        if (value == null || !(value.opt("title") instanceof String) || !(value.opt("artist") instanceof String) || !(value.opt("lyrics") instanceof JSONArray)) throw new Exception("歌曲信息无效");
+        LibraryPaths.id(value.getString("id"));
+        for (int position = 0; position < value.getJSONArray("lyrics").length(); position++) {
+            JSONObject line = value.getJSONArray("lyrics").getJSONObject(position);
+            if (!(line.opt("text") instanceof String) || !(line.opt("time") instanceof Number) || !Double.isFinite(line.getDouble("time")) || line.has("translation") && !(line.opt("translation") instanceof String)) throw new Exception("歌词格式无效");
+        }
+        JSONObject clean = new JSONObject(value.toString()); clean.remove("audio"); clean.remove("cover"); return clean;
+    }
+    private JSONObject descriptor(JSONObject value) throws Exception {
+        if (value == null || !(value.opt("type") instanceof String)) throw new Exception("歌曲文件信息无效");
+        long size = SafeNumbers.fileOffset(value.opt("size"));
+        return new JSONObject().put("size", size).put("type", value.getString("type"));
+    }
+    private LibraryDocuments.Node media(LibraryDocuments.Node root, JSONObject record, String kind) throws Exception {
+        if (!kind.equals("audio") && !kind.equals("cover")) throw new Exception("无效文件类型");
+        String id = LibraryPaths.id(record.getJSONObject("metadata").getString("id"));
+        JSONObject file = record.getJSONObject(kind); descriptor(file);
+        LibraryPaths.filename(file.getString("file"));
+        if (!file.getString("sha256").matches("[a-f0-9]{64}")) throw new Exception("文件校验值无效");
+        LibraryDocuments.Node node = root.required("歌曲").required(id).required(file.getString("file"));
+        if (node.directory || node.size != file.getLong("size")) throw new Exception("歌曲文件缺失或大小不符：" + record.getJSONObject("metadata").getString("title"));
+        return node;
+    }
+    private JSONObject record(LibraryDocuments.Node root, String id) throws Exception { return index(root).getJSONObject("tracks").getJSONObject(LibraryPaths.id(id)); }
+    private void progress(String stage, int completed, int total) {
+        JSObject event = new JSObject(); event.put("stage", stage); event.put("completed", completed); event.put("total", total); notifyListeners("progress", event);
+    }
+    private JSONObject verify(LibraryDocuments.Node root, boolean hashes) throws Exception {
+        String before = documents.readIndex(root, "library.json");
+        String cacheBefore = documents.readIndex(root, "translations-cache.json");
+        JSONObject index = index(root); cache(root); JSONObject tracks = index.getJSONObject("tracks");
+        Iterator<String> keys = tracks.keys(); int completed = 0;
+        while (keys.hasNext()) {
+            String id = LibraryPaths.id(keys.next()); JSONObject record = tracks.getJSONObject(id);
+            if (!id.equals(metadata(record.getJSONObject("metadata")).getString("id"))) throw new Exception("歌曲标识与索引不符");
+            for (String kind : new String[] { "audio", "cover" }) if (kind.equals("audio") || record.has(kind)) {
+                LibraryDocuments.Node file = media(root, record, kind);
+                if (hashes && !file.digest().equals(record.getJSONObject(kind).getString("sha256"))) throw new Exception("文件 SHA-256 校验失败：" + file.name);
+                if (kind.equals("audio") && id.matches("[a-f0-9]{64}") && !id.equals(record.getJSONObject(kind).getString("sha256"))) throw new Exception("歌曲指纹不符");
+            }
+            if (hashes) progress("校验已有音乐库", ++completed, tracks.length());
+        }
+        if (!before.equals(documents.readIndex(root, "library.json")) || !java.util.Objects.equals(cacheBefore, documents.readIndex(root, "translations-cache.json"))) throw new Exception("核验期间曲库被其他软件修改，请重试");
+        return index;
+    }
+    private JSObject infoValue() throws Exception {
+        JSONObject saved = config(); String uri = saved.optString("uri");
+        JSObject value = new JSObject(); value.put("internalPath", getContext().getApplicationInfo().dataDir); value.put("previousPath", saved.optString("previousPath")); value.put("moving", false); value.put("legacyMigrated", true); value.put("uri", uri); value.put("databaseName", "tingyu-library");
+        if (uri.isEmpty()) {
+            value.put("storageMode", "database"); value.put("path", getContext().getApplicationInfo().dataDir + "/app_webview/（系统管理的 IndexedDB）"); value.put("trackCount", 0);
+        } else {
+            value.put("storageMode", "folder"); value.put("path", saved.optString("path", uri));
+            try { JSONObject index = index(root(null)); value.put("trackCount", index.getJSONObject("tracks").length()); value.put("libraryId", index.getString("libraryId")); }
+            catch (Exception error) { value.put("trackCount", 0); value.put("error", "目录失联或授权失效，请重新选择已有音乐库。" + error.getMessage()); }
+        }
+        return value;
+    }
+    @PluginMethod public void info(PluginCall call) { run(call, this::infoValue); }
+    @PluginMethod public void useDatabase(PluginCall call) {
+        run(call, () -> {
+            if (!uploads.isEmpty()) throw new Exception("请先完成歌曲写入");
+            JSObject previous = infoValue(); saveConfig(new JSONObject().put("previousPath", previous.getString("path"))); return infoValue();
+        });
+    }
+
+    @PluginMethod public void choose(PluginCall call) {
+        if (!selecting.compareAndSet(false, true)) { call.reject("文件夹选择正在进行"); return; }
+        try {
+            String mode = call.getString("mode", "existing");
+            if (!mode.equals("copy") && !mode.equals("existing")) throw new Exception("无效的选择方式");
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+            startActivityForResult(call, intent, "directoryResult");
+        } catch (Exception error) { selecting.set(false); call.reject(error.getMessage()); }
+    }
+    @ActivityCallback private void directoryResult(PluginCall call, ActivityResult response) {
+        if (call == null) { selecting.set(false); return; }
+        Uri uri = response.getData() == null ? null : response.getData().getData();
+        if (response.getResultCode() != Activity.RESULT_OK || uri == null) { selecting.set(false); JSObject value = new JSObject(); value.put("cancelled", true); call.resolve(value); return; }
+        run(call, () -> {
+            try {
+                int granted = response.getData().getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                if (granted != (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) throw new Exception("需要读写授权才能保存歌词与译文");
+                getContext().getContentResolver().takePersistableUriPermission(uri, granted);
+                LibraryDocuments.Node selected = documents.tree(uri); int count = 0;
+                if (call.getString("mode", "existing").equals("existing")) {
+                    if (documents.readIndex(selected, "library.json") == null) {
+                        LibraryDocuments.Node found = null;
+                        for (String name : new String[] { "音乐库", "弦栖霁音乐库" }) {
+                            LibraryDocuments.Node child = selected.child(name);
+                            if (child != null && child.directory && documents.readIndex(child, "library.json") != null) { if (found != null) throw new Exception("存在多个曲库，请直接选择其中一个"); found = child; }
+                        }
+                        if (found == null) throw new Exception("未找到 library.json，请选择完整文件音乐库，ZIP 或普通音频目录仍需先导入一次");
+                        selected = found;
+                    }
+                    JSONObject inspected = verify(selected, false);
+                    if (inspected.optBoolean("copyIncomplete")) throw new Exception("该目录的复制尚未完整完成，请保留原库，重新复制到另一个空位置");
+                    count = inspected.getJSONObject("tracks").length();
+                } else if (selected.child("弦栖霁音乐库") != null) throw new Exception("此处已存在弦栖霁音乐库，请选择“打开已有音乐库”，或改选其他父目录");
+                String token = UUID.randomUUID().toString(); candidates.put(token, selected);
+                JSObject value = new JSObject(); value.put("token", token); value.put("uri", selected.uri.toString()); value.put("path", LibraryDocuments.display(selected) + (call.getString("mode", "existing").equals("copy") ? "/弦栖霁音乐库" : "")); value.put("trackCount", count); return value;
+            } finally { selecting.set(false); }
+        });
+    }
+    @PluginMethod public void create(PluginCall call) {
+        run(call, () -> {
+            String token = call.getString("target"); LibraryDocuments.Node parent = root(token);
+            LibraryDocuments.Node selected = parent.create("弦栖霁音乐库", DocumentsContract.Document.MIME_TYPE_DIR);
+            JSONObject empty = new JSONObject().put("format", "xianqiji-library-folder").put("version", 1).put("libraryId", UUID.randomUUID().toString()).put("legacyMigrated", true).put("copyIncomplete", true).put("tracks", new JSONObject());
+            documents.atomicText(selected, "library.json", empty.toString(2)); candidates.put(token, selected); return new JSObject();
+        });
+    }
+    @PluginMethod public void activate(PluginCall call) {
+        run(call, () -> {
+            if (!uploads.isEmpty()) throw new Exception("请先完成歌曲写入再切换曲库");
+            LibraryDocuments.Node selected = root(call.getString("target")); JSONObject index = verify(selected, true);
+            if (index.optBoolean("copyIncomplete")) {
+                JSONArray expected = call.getArray("expectedIds"); JSONObject tracks = index.getJSONObject("tracks");
+                if (expected == null || expected.length() != tracks.length()) throw new Exception("复制歌曲数不完整，未切换");
+                java.util.Set<String> identifiers = new java.util.HashSet<>();
+                for (int position = 0; position < expected.length(); position++) { String id = LibraryPaths.id(expected.getString(position)); if (!identifiers.add(id) || !tracks.has(id)) throw new Exception("复制歌曲清单不一致，未切换"); }
+                index.remove("copyIncomplete"); documents.atomicText(selected, "library.json", index.toString(2));
+            }
+            String probe = ".xianqiji-write-check-" + UUID.randomUUID(); LibraryDocuments.Node test = selected.create(probe, "application/octet-stream");
+            try { test.writeText("verify"); test = test.rename(probe + "-renamed"); } finally { try { test.delete(); } catch (Exception ignored) {} }
+            JSObject previous = infoValue();
+            saveConfig(new JSONObject().put("uri", selected.uri.toString()).put("path", LibraryDocuments.display(selected)).put("previousPath", previous.getString("path")));
+            return infoValue();
+        });
+    }
+    @PluginMethod public void list(PluginCall call) {
+        run(call, () -> {
+            LibraryDocuments.Node root = root(call.getString("target")); JSONObject tracks = verify(root, false).getJSONObject("tracks"); JSArray values = new JSArray();
+            Iterator<String> keys = tracks.keys();
+            while (keys.hasNext()) { JSONObject record = tracks.getJSONObject(keys.next()); record.getJSONObject("audio").put("uri", media(root, record, "audio").uri.toString()); values.put(record); }
+            JSObject value = new JSObject(); value.put("tracks", values); return value;
+        });
+    }
+    @PluginMethod public void begin(PluginCall call) {
+        run(call, () -> {
+            Upload upload = new Upload(); upload.root = root(call.getString("target")); upload.metadata = metadata(call.getObject("metadata"));
+            String id = upload.metadata.getString("id"); upload.directory = upload.root.folder("歌曲").folder(id);
+            upload.record = new JSONObject().put("metadata", upload.metadata);
+            String token = UUID.randomUUID().toString(); String base = LibraryPaths.safeName(upload.metadata.getString("artist") + " - " + upload.metadata.getString("title"));
+            String format = upload.metadata.optString("format", "mp3"); if (!format.matches("[a-zA-Z0-9]{2,5}")) format = "mp3";
+            for (String kind : new String[] { "audio", "cover" }) {
+                JSONObject provided = call.getObject(kind); if (provided == null && kind.equals("cover")) continue;
+                JSONObject file = descriptor(provided); String extension = kind.equals("audio") ? format : file.getString("type").equals("image/png") ? "png" : "jpg";
+                String filename = (kind.equals("audio") ? base : "cover") + "-" + token + "." + extension;
+                upload.directory.create(filename, "application/octet-stream"); file.put("file", filename); upload.record.put(kind, file); upload.offsets.put(kind, 0L);
+            }
+            uploads.put(token, upload); JSObject value = new JSObject(); value.put("token", token); return value;
+        });
+    }
+    @PluginMethod public void write(PluginCall call) {
+        run(call, () -> {
+            Upload upload = uploads.get(call.getString("token")); String kind = call.getString("kind", "");
+            long offset = SafeNumbers.fileOffset(call.getData().opt("offset")); String encoded = call.getString("data", "");
+            if (upload == null || !upload.offsets.containsKey(kind) || encoded.length() > 6 * 1024 * 1024) throw new Exception("无效音频分块");
+            byte[] bytes = Base64.decode(encoded, Base64.DEFAULT); JSONObject file = upload.record.getJSONObject(kind);
+            if (bytes.length > 4 * 1024 * 1024 || offset != upload.offsets.get(kind) || offset + bytes.length > file.getLong("size")) throw new Exception("音频分块位置错误");
+            upload.directory.required(file.getString("file")).write(offset, bytes); upload.offsets.put(kind, offset + bytes.length); return new JSObject();
+        });
+    }
+    private void lyrics(LibraryDocuments.Node directory, JSONObject metadata, String audioFilename) throws Exception {
+        JSONArray lines = metadata.getJSONArray("lyrics"); boolean timed = false;
+        for (int index = 0; index < lines.length(); index++) if (lines.getJSONObject(index).getDouble("time") >= 0) timed = true;
+        int extension = audioFilename.lastIndexOf('.'); String base = extension > 0 ? audioFilename.substring(0, extension) : audioFilename;
+        for (boolean translated : new boolean[] { false, true }) {
+            StringBuilder text = new StringBuilder();
+            for (int index = 0; index < lines.length(); index++) {
+                JSONObject line = lines.getJSONObject(index); String words = translated ? line.optString("translation") : line.getString("text");
+                if (words.isEmpty()) continue;
+                if (text.length() > 0) text.append('\n');
+                if (line.getDouble("time") >= 0) { long stamp = Math.round(line.getDouble("time") * 100); text.append(String.format(java.util.Locale.ROOT, "[%02d:%02d.%02d]", stamp / 6000, stamp / 100 % 60, stamp % 100)); }
+                text.append(words);
+            }
+            documents.atomicText(directory, base + (translated ? ".zh" : "") + (timed ? ".lrc" : ".txt"), text.toString());
+        }
+        documents.atomicText(directory, "tingyu-library.json", new JSONObject().put("format", "xianqiji-library").put("version", 1).put("tracks", new JSONArray().put(metadata)).toString(2));
+    }
+    @PluginMethod public void finish(PluginCall call) {
+        run(call, () -> {
+            String token = call.getString("token"); Upload upload = uploads.get(token); JSONObject hashes = call.getObject("hashes");
+            if (upload == null || hashes == null) throw new Exception("写入任务已失效");
+            for (String kind : upload.offsets.keySet()) {
+                JSONObject file = upload.record.getJSONObject(kind); LibraryDocuments.Node node = upload.directory.required(file.getString("file"));
+                String hash = hashes.getString(kind);
+                if (!hash.matches("[a-f0-9]{64}") || upload.offsets.get(kind) != file.getLong("size") || node.size != file.getLong("size") || !node.digest().equals(hash)) throw new Exception("歌曲写入不完整或 SHA-256 不符，原库保留");
+                if (kind.equals("audio") && upload.metadata.getString("id").matches("[a-f0-9]{64}") && !upload.metadata.getString("id").equals(hash)) throw new Exception("音频与歌曲指纹不一致");
+                file.put("sha256", hash);
+            }
+            lyrics(upload.directory, upload.metadata, upload.record.getJSONObject("audio").getString("file"));
+            JSONObject index = index(upload.root); index.getJSONObject("tracks").put(upload.metadata.getString("id"), upload.record);
+            documents.atomicText(upload.root, "library.json", index.toString(2)); uploads.remove(token); return result(upload.record);
+        });
+    }
+    @PluginMethod public void cancel(PluginCall call) {
+        run(call, () -> {
+            Upload upload = uploads.remove(call.getString("token"));
+            if (upload != null) for (String kind : upload.offsets.keySet()) { try { upload.directory.required(upload.record.getJSONObject(kind).getString("file")).delete(); } catch (Exception ignored) {} }
+            return new JSObject();
+        });
+    }
+    @PluginMethod public void read(PluginCall call) {
+        run(call, () -> {
+            LibraryDocuments.Node root = root(call.getString("target")); JSONObject record = record(root, call.getString("id")); String kind = call.getString("kind", "audio");
+            LibraryDocuments.Node node = media(root, record, kind); long offset = SafeNumbers.fileOffset(call.getData().opt("offset")); long length = SafeNumbers.fileOffset(call.getData().opt("length"));
+            if (length > 4 * 1024 * 1024 || offset > node.size || length > node.size - offset) throw new Exception("读取分块超出文件范围");
+            JSObject value = new JSObject(); value.put("data", Base64.encodeToString(node.read(offset, (int) length), Base64.NO_WRAP)); return value;
+        });
+    }
+    @PluginMethod public void patch(PluginCall call) {
+        run(call, () -> {
+            LibraryDocuments.Node root = root(null); JSONObject index = index(root); String id = LibraryPaths.id(call.getString("id")); JSONObject record = index.getJSONObject("tracks").getJSONObject(id);
+            JSONObject value = new JSONObject(record.getJSONObject("metadata").toString()); JSONObject patch = call.getObject("patch"); if (patch == null) throw new Exception("歌曲修改信息为空");
+            Iterator<String> keys = patch.keys(); while (keys.hasNext()) { String key = keys.next(); if (!key.equals("id") && !key.equals("audio") && !key.equals("cover")) value.put(key, patch.get(key)); }
+            value = metadata(value); lyrics(root.required("歌曲").required(id), value, record.getJSONObject("audio").getString("file")); record.put("metadata", value);
+            documents.atomicText(root, "library.json", index.toString(2)); return result(record);
+        });
+    }
+    @PluginMethod public void remove(PluginCall call) {
+        run(call, () -> { LibraryDocuments.Node root = root(null); JSONObject index = index(root); index.getJSONObject("tracks").remove(LibraryPaths.id(call.getString("id"))); documents.atomicText(root, "library.json", index.toString(2)); return new JSObject(); });
+    }
+    @PluginMethod public void cache(PluginCall call) {
+        run(call, () -> {
+            LibraryDocuments.Node root = root(call.getString("target")); JSONObject cache = cache(root); JSONArray entries = call.getArray("entries");
+            if (entries != null) {
+                for (int index = 0; index < entries.length(); index++) { JSONArray entry = entries.getJSONArray(index); if (entry.length() != 2 || !(entry.get(0) instanceof String) || !(entry.get(1) instanceof String)) throw new Exception("译文缓存条目无效"); cache.put(entry.getString(0), entry.getString(1)); }
+                documents.atomicText(root, "translations-cache.json", cache.toString(2));
+            }
+            JSArray values = new JSArray(); Iterator<String> keys = cache.keys(); while (keys.hasNext()) { String key = keys.next(); values.put(new JSONArray().put(key).put(cache.getString(key))); }
+            JSObject value = new JSObject(); value.put("entries", values); return value;
+        });
+    }
+}
