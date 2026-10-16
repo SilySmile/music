@@ -1,0 +1,7 @@
+[Unit]
+Description=Allow only Xianqiji update HTTPS through existing BT country filter
+After=firewalld.service BT-FirewallServices.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/xianqiji-allow-https

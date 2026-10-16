@@ -1,0 +1,11 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const root = path.resolve(__dirname, '..');
+const source = path.join(root, 'updates/public.json');
+const trust = JSON.parse(fs.readFileSync(source, 'utf8'));
+if (Object.keys(trust).some((key) => !['product', 'defaultBaseUrl', 'publicKey'].includes(key))) throw new Error('更新信任配置中存在不应打包的字段');
+crypto.createPublicKey(trust.publicKey);
+require('../updates/protocol.cjs').baseUrl(trust.defaultBaseUrl);
+const target = path.join(root, 'android/app/src/main/assets/update-public.json');
+fs.mkdirSync(path.dirname(target), { recursive: true }); fs.copyFileSync(source, target);

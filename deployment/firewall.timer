@@ -1,0 +1,10 @@
+[Unit]
+Description=Restore Xianqiji HTTPS rule after BT firewall reloads
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=120
+Unit=xianqiji-update-firewall.service
+
+[Install]
+WantedBy=timers.target

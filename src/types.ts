@@ -1,0 +1,119 @@
+export type LyricLine = { time: number; text: string; translation?: string };
+
+export type Track = {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;
+  format: string;
+  audio: Blob;
+  cover?: Blob;
+  lyrics: LyricLine[];
+  lyricsSource?: string;
+  translationSource?: string;
+  onlineUpdatedAt?: number;
+  translationAudit?: { song: string; artist: string; model: string; verifiedAt: number; checkedLines: number };
+  favorite: boolean;
+  addedAt: number;
+  lastPlayed?: number;
+};
+
+export type LibraryView = 'all' | 'favorites' | 'recent';
+
+export type DesktopStyle = { theme: 'gold' | 'cyan' | 'green' | 'coral'; fontSize: number; opacity: number; layout: 'horizontal' | 'vertical'; verticalContent: 'auto' | 'next' | 'translation'; lineGap: number };
+export type DesktopHitRegion = { kind: 'toolbar' | 'unlock'; x: number; y: number; width: number; height: number };
+export type DesktopState = DesktopStyle & { visible: boolean; locked: boolean };
+export type AppPreferences = { closeAction: 'tray' | 'quit' };
+export type TrayAction = 'play-pause' | 'previous' | 'next' | 'toggle-favorite' | 'cycle-mode' | 'set-volume' | 'volume-up' | 'volume-down' | 'desktop-toggle' | 'settings' | 'show-main' | 'quit';
+export type DesktopSnapshot = {
+  title: string;
+  artist: string;
+  text: string;
+  translation: string;
+  nextText: string;
+  previousText: string;
+  lineIndex: number;
+  lineStart: number;
+  lineEnd: number;
+  position: number;
+  duration: number;
+  playing: boolean;
+  showTranslation: boolean;
+  favorite: boolean;
+  volume: number;
+  mode: 'list' | 'shuffle' | 'one';
+  hasTrack: boolean;
+};
+export type DesktopAction = 'play-pause' | 'previous' | 'next' | 'settings' | 'show-main' | 'minimize' | 'quit';
+export type NetworkRequest = { service: 'lyrics' | 'translation'; params: Record<string, string> };
+export type AIConfig = { url: string; model: string; key: string };
+export type ShortcutConfig = { enabled: boolean; bindings: Record<string, string>; status: Record<string, 'ok' | 'conflict' | 'disabled'>; path: string };
+export type AIRequest = { url: string; key: string; body: Record<string, unknown> };
+export type LibraryInfo = { path: string; previousPath: string; internalPath: string; trackCount: number; legacyMigrated: boolean; moving: boolean; error?: string };
+export type LibraryProgress = { stage: string; completed: number; total: number };
+export type StoredTrack = { metadata: Omit<Track, 'audio' | 'cover'>; audio: { file: string; size: number; type: string; sha256: string }; cover?: { file: string; size: number; type: string; sha256: string } };
+
+declare global {
+  interface Window {
+    tingyuDesktop?: {
+      updateConfig(): Promise<import('./lib/appUpdates').UpdateConfig>;
+      saveUpdateConfig(value: { baseUrl: string; autoCheck: boolean }): Promise<import('./lib/appUpdates').UpdateConfig>;
+      checkUpdate(): Promise<import('./lib/appUpdates').UpdateState>;
+      downloadUpdate(): Promise<import('./lib/appUpdates').UpdateState>;
+      pauseUpdate(): Promise<import('./lib/appUpdates').UpdateState>;
+      updateState(): Promise<import('./lib/appUpdates').UpdateState>;
+      installUpdate(): Promise<{ installed?: boolean; portable?: boolean; testVerified?: boolean; permissionNeeded?: boolean }>;
+      onUpdateState(listener: (state: import('./lib/appUpdates').UpdateState) => void): () => void;
+      streamingAudio?: boolean;
+      getLibraryInfo(): Promise<LibraryInfo>;
+      getShortcuts(): Promise<ShortcutConfig>;
+      saveShortcuts(value: Pick<ShortcutConfig, 'enabled' | 'bindings'>): Promise<ShortcutConfig>;
+      defaultShortcuts(): Promise<Pick<ShortcutConfig, 'enabled' | 'bindings'>>;
+      listLibraryTracks(): Promise<StoredTrack[]>;
+      beginLibraryTrack(metadata: Omit<Track, 'audio' | 'cover'>, audio: { size: number; type: string }, cover?: { size: number; type: string }): Promise<string>;
+      writeLibraryChunk(token: string, kind: 'audio' | 'cover', offset: number, bytes: Uint8Array): Promise<void>;
+      finishLibraryTrack(token: string, hashes: Partial<Record<'audio' | 'cover', string>>): Promise<StoredTrack>;
+      cancelLibraryTrack(token: string): Promise<void>;
+      readLibraryChunk(id: string, kind: 'audio' | 'cover', offset: number, length: number): Promise<Uint8Array>;
+      patchLibraryTrack(id: string, patch: Partial<Omit<Track, 'id' | 'audio' | 'cover'>>): Promise<StoredTrack>;
+      removeLibraryTrack(id: string): Promise<void>;
+      getLibraryCache(key: string): Promise<string | undefined>;
+      setLibraryCache(entries: [string, string][]): Promise<void>;
+      finishLibraryMigration(): Promise<void>;
+      chooseLibraryFolder(): Promise<string | null>;
+      moveLibrary(): Promise<LibraryInfo>;
+      chooseExistingLibrary(): Promise<{ path: string; trackCount: number } | null>;
+      useExistingLibrary(): Promise<LibraryInfo>;
+      openLibraryFolder(): Promise<void>;
+      onLibraryProgress(callback: (progress: LibraryProgress) => void): () => void;
+      getState(): Promise<DesktopState>;
+      setVisible(visible: boolean): Promise<DesktopState>;
+      setLocked(locked: boolean): Promise<DesktopState>;
+      setStyle(style: Partial<DesktopStyle>): Promise<DesktopState>;
+      getSnapshot(): Promise<DesktopSnapshot | null>;
+      updateSnapshot(snapshot: DesktopSnapshot): void;
+      control(action: DesktopAction): void;
+      onState(callback: (state: DesktopState) => void): () => void;
+      onSnapshot(callback: (snapshot: DesktopSnapshot) => void): () => void;
+      onControl(callback: (action: DesktopAction) => void): () => void;
+      onPointer(callback: (inside: boolean) => void): () => void;
+      setHitRegions(regions: DesktopHitRegion[]): void;
+      getPreferences(): Promise<AppPreferences>;
+      setPreferences(preferences: AppPreferences): Promise<AppPreferences>;
+      onPreferences(callback: (preferences: AppPreferences) => void): () => void;
+      trayControl(action: TrayAction, value?: number): void;
+      onTrayControl(callback: (action: TrayAction, value?: number) => void): () => void;
+      hideTrayMenu(): void;
+      request(request: NetworkRequest): Promise<unknown>;
+      requestAI(request: AIRequest): Promise<unknown>;
+      getAIKey(): Promise<string>;
+      saveAIKey(key: string): Promise<void>;
+      clearAIKey(): Promise<void>;
+      openExport(id: string, filename: string, resume: boolean): Promise<{ location: string; size: number }>;
+      writeExport(id: string, offset: number, bytes: Uint8Array): Promise<void>;
+      finishExport(id: string, size: number): Promise<string>;
+      revealExport(id: string): Promise<void>;
+    };
+  }
+}

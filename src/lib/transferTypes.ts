@@ -1,0 +1,40 @@
+export type TransferStatus = 'running' | 'paused' | 'failed' | 'completed';
+export type ImportTask = {
+  id: string;
+  kind: 'import';
+  label: string;
+  fingerprint: string;
+  completed: string[];
+  total: number;
+  status: TransferStatus;
+  updatedAt: number;
+  warnings: string[];
+  error?: string;
+};
+export type ExportSource = { type: 'audio' | 'cover'; trackId: string } | { type: 'text'; text: string };
+export type ExportEntry = { name: string; size: number; source: ExportSource };
+export type ZipRecord = { name: string; size: number; crc: number; offset: number };
+export type ZipCheckpoint = {
+  phase: 'header' | 'data' | 'descriptor' | 'central' | 'footer' | 'done';
+  entryIndex: number;
+  entryOffset: number;
+  offset: number;
+  crc: number;
+  recordOffset: number;
+  records: ZipRecord[];
+  centralIndex: number;
+  centralOffset: number;
+};
+export type ExportTask = {
+  id: string;
+  kind: 'export';
+  label: string;
+  filename: string;
+  entries: ExportEntry[];
+  checkpoint: ZipCheckpoint;
+  status: TransferStatus;
+  updatedAt: number;
+  location?: string;
+  error?: string;
+};
+export type TransferTask = ImportTask | ExportTask;

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Xianqiji short-lived HTTPS certificate twice daily
+
+[Timer]
+OnCalendar=*-*-* 03,15:17:00
+Persistent=true
+AccuracySec=5min
+Unit=xianqiji-certificate-renew.service
+
+[Install]
+WantedBy=timers.target

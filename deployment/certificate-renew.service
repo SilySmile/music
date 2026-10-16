@@ -1,0 +1,9 @@
+[Unit]
+Description=Xianqiji IP HTTPS certificate renewal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /root/xianqiji-acme.sh --cron --home /root/xianqiji-acme-home
+TimeoutStartSec=600
