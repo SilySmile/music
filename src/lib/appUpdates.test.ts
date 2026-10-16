@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { EventEmitter } from 'node:events';
 const createUpdates = createRequire(import.meta.url)('../../electron/updates.cjs');
 const keys = generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { format: 'pem', type: 'spki' }, privateKeyEncoding: { format: 'pem', type: 'pkcs8' } });
 const directories: string[] = [];
@@ -25,6 +26,16 @@ async function fixture(bytes = Buffer.from('fixture installer - must never execu
 }
 afterEach(async () => { for (const directory of directories.splice(0)) { expect(path.dirname(directory)).toBe(path.resolve('test-results')); expect(path.basename(directory)).toMatch(/^updater-/); await fs.rm(directory, { recursive: true }); } });
 describe('Windows signed in-app updates', () => {
+  it('launches a visible installer without the silent switch and quits only after successful launch', async () => {
+    const data = await fixture();
+    const launch = vi.fn((_filename: string, _args: string[], _options: Record<string, unknown>) => { const child = Object.assign(new EventEmitter(), { unref: vi.fn() }); queueMicrotask(() => child.emit('spawn')); return child; });
+    const updates = createUpdates({ ...data.options, testing: false, launch });
+    await updates.check(); await updates.download();
+    expect((await updates.install()).installed).toBe(true);
+    expect(launch.mock.calls[0][1]).not.toContain('/S');
+    expect(launch.mock.calls[0][2]).toMatchObject({ windowsHide: false });
+    await new Promise((resolve) => setTimeout(resolve, 350)); expect(data.app.quit).toHaveBeenCalledTimes(1);
+  });
   it('saves a custom domain, checks and downloads a signed release, rechecks it before test installation', async () => {
     const fixtureData = await fixture(); const updates = createUpdates(fixtureData.options);
     expect((await updates.config()).autoCheck).toBe(false);

@@ -53,6 +53,15 @@ describe('private online source', () => {
     const merged = supplementSourceMetadata(local, { ...remote.metadata, lyrics: [{ time: 0, text: 'Light', translation: '光' }, { time: 2, text: 'Home', translation: '线上译文' }, { time: 3, text: 'Other', translation: '不应套用' }] });
     expect(merged.lyrics.map((line) => line.translation)).toEqual(['光', '本地译文', undefined]); expect(merged.audio).toBe(track.audio); expect(merged.favorite).toBe(true);
   });
+  it('returns an existing verified song as success without sending chunks or overwriting metadata', async () => {
+    const request = vi.fn(async () => ({ existing: remote })) as unknown as SourceRequester;
+    const progress = vi.fn();
+    expect(await uploadSourceTrack({ ...track, title: 'Renamed duplicate' }, 0, config, progress, new AbortController().signal, request)).toEqual(remote);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(progress).toHaveBeenLastCalledWith('音频已存在，上传成功 · Song');
+    const invalid = vi.fn(async () => ({ existing: { ...remote, audio: { ...remote.audio, size: 99 } } })) as unknown as SourceRequester;
+    await expect(uploadSourceTrack(track, 0, config, progress, new AbortController().signal, invalid)).rejects.toThrow('不符');
+  });
   it('stores access tokens using encryption and refuses redirects or arbitrary IPC paths', async () => {
     directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xq-source-test-'));
     const secret = 'private-source-token';

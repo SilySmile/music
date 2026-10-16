@@ -1,22 +1,23 @@
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { sha256 } from '@noble/hashes/sha2.js';
 import type { Track } from '../types';
-import { getTrack, saveTracks } from './storage';
+import { getTrack, saveStreamedTrack, saveTracks } from './storage';
 
-export type SourceConfig = { baseUrl: string; token: string; remember: boolean; autoSync?: boolean; path?: string };
+export type SourceConfig = { baseUrl: string; token: string; remember: boolean; autoSync?: boolean; connected?: boolean; path?: string };
 export type SourceRequest = { method: 'GET' | 'POST'; path: string; body?: unknown };
 export type SourceMedia = { size: number; type: string; sha256: string };
 export type SourceTrack = { metadata: Omit<Track, 'audio' | 'cover'>; audio: SourceMedia; cover?: SourceMedia; revision: number; updatedAt: number };
-export type SourceInfo = { product: string; schema: number; canWrite: boolean; trackCount: number; chunkBytes: number; verification?: boolean };
+export type SourceInfo = { product: string; schema: number; canWrite: boolean; trackCount: number; chunkBytes: number; verification?: boolean; publicRead?: boolean; streaming?: boolean };
 export type SourceRequester = <Result>(request: SourceRequest, signal?: AbortSignal) => Promise<Result>;
 const secure = registerPlugin<{ loadKey(options: { slot: string }): Promise<{ key: string; path: string }>; saveKey(options: { slot: string; key: string }): Promise<void>; clearKey(options: { slot: string }): Promise<void> }>('SecureConfig');
 const defaultConfig: SourceConfig = { baseUrl: 'https://39.106.55.218/music-library/', token: '', remember: false };
 let memory: SourceConfig | undefined;
 
 export function normalizeSourceUrl(value: string) {
-  const url = new URL(value.trim());
+  const input = value.trim();
+  const url = new URL(input.includes('://') ? input : `https://${input}`);
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('请填写不含账号、密码或参数的 HTTPS 曲库地址。');
-  url.pathname = `${url.pathname.replace(/\/+$/, '')}/`; return url.href;
+  url.pathname = url.pathname === '/' ? '/music-library/' : `${url.pathname.replace(/\/+$/, '')}/`; return url.href;
 }
 export function parseSourceConnection(text: string): SourceConfig {
   if (text.length > 16384) throw new Error('连接配置过大，请选择正确的曲库配置文件。');
@@ -33,18 +34,19 @@ export async function loadSourceConfig(): Promise<SourceConfig> {
   if (Capacitor.getPlatform() === 'android') {
     const saved = await secure.loadKey({ slot: 'cloud' });
     if (saved.key) { const config = JSON.parse(saved.key); return { ...config, baseUrl: normalizeSourceUrl(config.baseUrl), autoSync: config.autoSync === true, path: saved.path }; }
-    return { ...defaultConfig, baseUrl: localStorage.getItem('xianqiji-source-url') || defaultConfig.baseUrl, path: saved.path };
+    return { ...defaultConfig, baseUrl: localStorage.getItem('xianqiji-source-url') || defaultConfig.baseUrl, connected: localStorage.getItem('xianqiji-source-connected') === 'true', path: saved.path };
   }
   return { ...defaultConfig };
 }
 export async function saveSourceConfig(config: SourceConfig): Promise<SourceConfig> {
-  const next = { baseUrl: normalizeSourceUrl(config.baseUrl), token: config.token.trim(), remember: config.remember, autoSync: config.autoSync === true };
+  const next = { baseUrl: normalizeSourceUrl(config.baseUrl), token: config.token.trim(), remember: config.remember, autoSync: config.autoSync === true, connected: config.connected ?? !!config.token };
   if (next.token.length > 1000 || /[\r\n]/.test(next.token)) throw new Error('无效的曲库访问密钥。');
   let saved: SourceConfig = next;
   if (window.tingyuDesktop) saved = await window.tingyuDesktop.saveSourceConfig(next);
   else if (Capacitor.getPlatform() === 'android') {
     if (next.remember && next.token) await secure.saveKey({ slot: 'cloud', key: JSON.stringify(next) }); else await secure.clearKey({ slot: 'cloud' });
     localStorage.setItem('xianqiji-source-url', next.baseUrl);
+    localStorage.setItem('xianqiji-source-connected', String(next.connected));
   } else if (next.remember) throw new Error('浏览器预览不能加密保存曲库密钥，请使用 PC 或安卓客户端。');
   memory = saved;
   window.dispatchEvent(new Event('xianqiji-source-config-changed'));
@@ -56,9 +58,10 @@ export const sourceRequest: SourceRequester = async <Result>(request: SourceRequ
   if (window.tingyuDesktop) result = await window.tingyuDesktop.requestSource(request);
   else {
     const config = await loadSourceConfig();
-    if (!config.token) throw new Error('请先保存曲库访问密钥。');
+    if (request.method === 'POST' && !config.token) throw new Error('上传需要填写写入密钥；留空只能听歌。');
     const url = new URL(request.path.slice(1), normalizeSourceUrl(config.baseUrl)).href;
-    const options = { url, headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, connectTimeout: 15000, readTimeout: 120000, responseType: 'json' as const, disableRedirects: true };
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }; if (config.token) headers.Authorization = `Bearer ${config.token}`;
+    const options = { url, headers, connectTimeout: 15000, readTimeout: 120000, responseType: 'json' as const, disableRedirects: true };
     if (Capacitor.getPlatform() === 'android') result = request.method === 'GET' ? await CapacitorHttp.get(options) : await CapacitorHttp.post({ ...options, data: request.body || {} });
     else {
       const response = await fetch(url, { method: request.method, headers: options.headers, body: request.method === 'POST' ? JSON.stringify(request.body || {}) : undefined, redirect: 'error', credentials: 'omit', referrerPolicy: 'no-referrer', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000) });
@@ -112,7 +115,18 @@ export async function uploadSourceTrack(track: Track, revision: number, config: 
     try { task = await request({ method: 'GET', path: `/uploads/${saved}` }, signal); }
     catch (error) { if ((error as { status?: number }).status !== 404) throw error; localStorage.removeItem(key); }
   }
-  if (!task) { task = await request<{ id: string; offsets: Record<string, number>; done?: boolean }>({ method: 'POST', path: '/uploads', body }, signal); if (!/^[a-f0-9]{32}$/.test(task.id)) throw new Error('线上传输任务格式错误。'); localStorage.setItem(key, task.id); }
+  if (!task) {
+    const started = await request<{ id: string; offsets: Record<string, number>; done?: boolean } | { existing: SourceTrack }>({ method: 'POST', path: '/uploads', body }, signal);
+    if ('existing' in started) {
+      const record = validateSourceTrack(started.existing);
+      if (record.metadata.id !== track.id || record.audio.sha256 !== media.audio.sha256 || record.audio.size !== track.audio.size) throw new Error('服务器返回的已有音频与本地不符。');
+      onProgress(`音频已存在，上传成功 · ${record.metadata.title}`);
+      return record;
+    }
+    task = started;
+    if (!/^[a-f0-9]{32}$/.test(task.id)) throw new Error('线上传输任务格式错误。');
+    localStorage.setItem(key, task.id);
+  }
   for (const kind of ['audio', 'cover'] as const) if (track[kind] && !task.done) {
     const blob = track[kind]!; let offset = task.offsets[kind];
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > blob.size) throw new Error('线上传输检查点无效。');
@@ -135,6 +149,13 @@ export function supplementSourceMetadata(local: Track, remote: SourceTrack['meta
 export async function downloadSourceTrack(record: SourceTrack, onProgress: (message: string) => void, signal: AbortSignal, request: SourceRequester = sourceRequest) {
   validateSourceTrack(record);
   const local = await getTrack(record.metadata.id);
+  if (!local) return saveStreamedTrack({ ...record.metadata, favorite: !!record.metadata.favorite, addedAt: Date.now() }, record, async (kind, offset, length) => {
+    const media = record[kind]!;
+    onProgress(`保存到本地音乐库 · ${record.metadata.title} · ${Math.floor(offset / media.size * 100)}%`);
+    const chunk = await request<{ data: string; sha256: string; size: number; offset: number }>({ method: 'GET', path: `/tracks/${record.metadata.id}/media/${kind}?offset=${offset}&length=${length}` }, signal);
+    if (chunk.sha256 !== media.sha256 || chunk.size !== media.size || chunk.offset !== offset) throw new Error('云端文件版本已变化，未写入音乐库。');
+    return Uint8Array.from(atob(chunk.data), (character) => character.charCodeAt(0));
+  }, signal);
   const read = async (kind: 'audio' | 'cover', media: SourceMedia) => {
     const parts: BlobPart[] = []; const digest = sha256.create();
     for (let offset = 0; offset < media.size; offset += 1024 * 1024) {

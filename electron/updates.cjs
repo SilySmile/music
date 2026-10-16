@@ -121,7 +121,7 @@ module.exports = function createUpdates({ app, fetch, progress = () => {}, testi
     if (testing) return { installed: false, testVerified: true, path: target };
     if (portable) return { installed: false, portable: true, path: target };
     const installRoot = path.dirname(process.execPath);
-    await new Promise((resolve, reject) => { const child = launch(target, ['/S', '/currentuser', `/D=${installRoot}`], { detached: true, stdio: 'ignore', windowsHide: true }); child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); }); });
+    await new Promise((resolve, reject) => { const child = launch(target, ['/currentuser', `/D=${installRoot}`], { detached: true, stdio: 'ignore', windowsHide: false }); child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); }); });
     setTimeout(() => app.quit(), 300);
     return { installed: true };
   }

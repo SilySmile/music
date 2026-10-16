@@ -402,11 +402,10 @@ async function main() {
     await fs.copyFile(exported.location, exportPath);
     await page.getByRole('button', { name: '关闭音乐导出', exact: true }).click();
     await page.locator('.sidebar nav button').nth(0).click();
-    for (let index = 0; index < 3; index++) {
-      await page.locator('.track-row').first().locator('.delete-song').click();
-      await page.getByRole('button', { name: '确认移除', exact: true }).click();
-      await page.waitForFunction((expected) => document.querySelectorAll('.track-row').length === expected, 2 - index);
-    }
+    assert.equal(await page.locator('.delete-song,.remove-favorite').count(), 0);
+    await page.evaluate(async () => { const bridge = window.tingyuDesktop; for (const record of await bridge.listLibraryTracks()) await bridge.removeLibraryTrack(record.metadata.id); });
+    await page.reload();
+    await page.waitForSelector('.empty-state');
     await page.getByLabel('选择音乐压缩包或歌曲文件', { exact: true }).setInputFiles(exportPath);
     await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 3);
     assert.equal(await page.locator('.track-row .favorite.liked').count(), 1);
@@ -449,8 +448,8 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('.transfer-center .export-status')?.textContent?.includes('导出完成'), { timeout: 30000 });
     await page.screenshot({ path: path.join(results, 'transfer-resumed.png') });
     await page.getByRole('button', { name: '关闭传输任务', exact: true }).click();
-    await page.getByRole('button', { name: '移除 断点恢复测试', exact: true }).click();
-    await page.getByRole('button', { name: '确认移除', exact: true }).click();
+    await page.evaluate(async () => { const bridge = window.tingyuDesktop; const record = (await bridge.listLibraryTracks()).find((item) => item.metadata.title === '断点恢复测试'); await bridge.removeLibraryTrack(record.metadata.id); });
+    await page.reload();
     await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 3);
     console.log('PASS 64 MB+ native export pause, page restart and persisted checkpoint resume');
     await page.setViewportSize({ width: 390, height: 844 });
@@ -465,10 +464,13 @@ async function main() {
     await page.getByRole('button', { name: '播放队列', exact: true }).click();
     assert.equal(await page.locator('.queue-row').count(), 3);
     await page.getByRole('button', { name: '关闭弹窗', exact: true }).click();
-    await page.locator('.track-row').first().locator('.delete-song').click();
-    await page.getByRole('button', { name: '确认移除', exact: true }).click();
-    await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 2);
-    console.log('PASS mobile layout, queue and deletion');
+    assert.equal(await page.locator('.delete-song,.remove-favorite').count(), 0);
+    await page.locator('.sidebar nav button').nth(1).click();
+    await page.getByRole('button', { name: /^移出我喜欢 / }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 0);
+    assert.equal((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).length, 3);
+    await page.locator('.sidebar nav button').nth(0).click();
+    console.log('PASS mobile layout, full queue and favorite-only removal without deleting files');
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.locator('.track-row').first().locator('.track-name').click();
     await page.waitForFunction(async () => (await window.tingyuDesktop.getSnapshot()).playing);

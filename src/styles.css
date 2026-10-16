@@ -264,4 +264,10 @@ input[type=checkbox]{accent-color:#8b9e74;width:14px;height:14px;flex-shrink:0}
 .source-auto-status { padding: 12px 14px; margin: 12px 0; border: 1px solid var(--border); border-radius: 12px; font-size: 12px; overflow-wrap: anywhere; }
 .source-auto-status p { margin: 6px 0; line-height: 1.6; }
 .source-auto-status summary { cursor: pointer; }
+.cloud-advanced { margin-top: 16px; padding-top: 12px; border-top: 1px solid #dedfd4; }
+.cloud-advanced > summary { cursor: pointer; font-size: 12px; color: #67765d; }
+.cloud-cache-banner button { pointer-events: auto; margin-left: 12px; border: 0; background: transparent; color: #a66632; cursor: pointer; }
+.cloud-advanced > label { display: block; margin: 14px 0; font-size: 12px; }
+.cloud-cache-banner { position: fixed; z-index: 35; bottom: 100px; left: 50%; transform: translateX(-50%); max-width: 90vw; border-radius: 10px; background: #fffaf3; padding: 10px 16px; box-shadow: 0 4px 20px #0002; font-size: 12px; pointer-events: none; }
 .source-auto-banner { position: fixed; z-index: 30; left: 50%; bottom: 108px; transform: translateX(-50%); max-width: min(620px, 90vw); padding: 9px 14px; border-radius: 12px; background: var(--surface, #fffaf4); box-shadow: 0 4px 20px #0002; font-size: 12px; pointer-events: none; overflow-wrap: anywhere; }
+.library-pagination{display:flex;align-items:center;justify-content:center;gap:16px;padding:20px 4px;font-size:12px;color:var(--muted)}.library-pagination .button{white-space:nowrap}.library-pagination span{text-align:center}@media(max-width:600px){.library-pagination{gap:8px}.library-pagination .button{padding:9px 12px}}

@@ -43,13 +43,14 @@ export default function OnlineSourceSettings({ tracks, blocked, auto, onChanged 
     controller.current = new AbortController();
     try {
       await auto.pause();
-      let saved = await saveSourceConfig({ ...config, baseUrl: normalizeSourceUrl(config.baseUrl), autoSync: false });
+      let saved = await saveSourceConfig({ ...config, baseUrl: normalizeSourceUrl(config.baseUrl), autoSync: false, connected: false });
       const result = await sourceRequest<SourceInfo>({ method: 'GET', path: '/info' }, controller.current.signal);
       if (result.product !== 'xianqiji-online-library' || result.schema !== 1 || result.chunkBytes !== 1024 * 1024) throw new Error('此地址不是兼容的弦栖霁在线曲库。');
       if (automatic && (!result.canWrite || !result.verification)) throw new Error(result.canWrite ? '请先更新服务器，开启在线文件核验支持。' : '自动上传需要读写密钥，此密钥只有读取权限。');
       const list = await listSource(sourceRequest, controller.current.signal);
       controller.current.signal.throwIfAborted();
-      if (automatic) saved = await saveSourceConfig({ ...saved, autoSync: true });
+      saved = await saveSourceConfig({ ...saved, connected: true, autoSync: automatic });
+      window.dispatchEvent(new CustomEvent('xianqiji-cloud-catalog', { detail: { config: saved, info: result, records: list } }));
       if (mounted.current) { setConfig(saved); setInfo(result); setRemote(list); setSelected([]); setDirty(false); setStatus(`连接成功 · ${list.length} 首 · ${result.canWrite ? '可读取和上传' : '只读访问'}`); }
     } catch (error) { progress(error instanceof Error ? error.message : '连接失败，请核对地址、密钥与服务器状态。'); }
     finally { lock.current = false; if (mounted.current) setWorking(false); }
@@ -68,7 +69,7 @@ export default function OnlineSourceSettings({ tracks, blocked, auto, onChanged 
         controller.current.signal.throwIfAborted();
         if (action === 'upload') {
           const track = tracks.find((track) => track.id === id); if (!track) throw new Error('本地歌曲已改变，请刷新。');
-          await uploadSourceTrack(track, remote.find((record) => record.metadata.id === id)?.revision || 0, saved, progress, controller.current.signal);
+          await uploadSourceTrack(track, 0, saved, progress, controller.current.signal);
         } else {
           const record = remote.find((record) => record.metadata.id === id); if (!record) throw new Error('线上歌曲已改变，请刷新。');
           await downloadSourceTrack(record, progress, controller.current.signal);
@@ -80,10 +81,13 @@ export default function OnlineSourceSettings({ tracks, blocked, auto, onChanged 
     } catch (error) { progress(`已完成 ${completed} 首。${controller.current.signal.aborted ? '已暂停；上传检查点保留，重新选择同一首可继续。' : error instanceof Error ? error.message : '传输失败，请重试。'} 请刷新核对线上状态，未确认完成的内容可能仍在服务端暂存。`); }
     finally { await onChanged().catch(() => {}); lock.current = false; window.dispatchEvent(new CustomEvent('xianqiji-source-transferring', { detail: false })); if (mounted.current) setWorking(false); }
   }
-  return <section className="online-source-settings"><h3><Cloud size={16} />在线音源 / 私人曲库</h3>
-    <p className="field-help">点击“一键连接并自动上传”后，将自动核对并上传当前本地库的全部音频、封面、歌词和中文译文；之后新增或补全的内容也会自动上传。请只连接你信任且有权使用的服务器；不发送 AI 密钥、应用设置或播放历史。</p>
+  return <section className="online-source-settings"><h3><Cloud size={16} />云端音乐</h3>
+    <p className="field-help">填写服务器地址即可听歌，上传密钥可以留空。连接后云端歌曲直接显示在“全部歌曲”，点播哪首就缓存哪首到当前本地音乐库，包含音频、封面和歌词；不会预先下载整库。</p>
     <label>音源链接<input aria-label="在线音源链接" value={config.baseUrl} disabled={disabled} onChange={(event) => update({ baseUrl: event.target.value, token: '', autoSync: false })} placeholder="https://你的域名/music-library/" /></label>
-    <label>曲库访问密钥<input aria-label="在线曲库访问密钥" type="password" autoComplete="off" value={config.token} disabled={disabled} onChange={(event) => update({ token: event.target.value })} placeholder="仅用于曲库，不是 AI 密钥或服务器 root 密码" /></label>
+    <label>上传密钥（选填，听歌可留空）<input aria-label="在线曲库访问密钥" type="password" autoComplete="off" value={config.token} disabled={disabled} onChange={(event) => update({ token: event.target.value })} placeholder="留空只听歌；填写有效写入密钥才可上传" /></label>
+    <button className="button primary" disabled={disabled || !config.baseUrl} onClick={() => void connect()}><Cloud size={14} />连接云端音乐</button>
+    {status && <p className="field-help" role="status">{status}</p>}
+    <details className="cloud-advanced"><summary>上传与高级管理（可选）</summary>
     <label className="source-remember"><input type="checkbox" checked={config.remember} disabled={disabled} onChange={(event) => update({ remember: event.target.checked })} />使用系统加密记住曲库密钥</label>
     <label>导入连接配置<input type="file" aria-label="导入曲库连接配置" accept=".json,.xqsource,application/json" disabled={disabled} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (!file) return; if (file.size > 16384) { progress('连接配置过大，请选择正确文件。'); return; } void file.text().then((text) => { update(parseSourceConnection(text)); progress('已填入地址和密钥；确认服务器后，点击“一键连接并自动上传”才开始同步。连接文件含访问凭证，请勿公开分享。'); }).catch((error) => progress(error.message)); }} /></label>
     {config.path && <p className="field-help">安全配置：<code>{config.path}</code>。不勾选记住时，密钥仅在本次运行有效。</p>}
@@ -92,10 +96,10 @@ export default function OnlineSourceSettings({ tracks, blocked, auto, onChanged 
     {info && !dirty && <><div className="source-tabs"><button className={`button ${tab === 'remote' ? 'primary' : 'outline'}`} disabled={disabled} onClick={() => { setTab('remote'); setSelected([]); setConfirmation(null); }}>线上曲库 · {remote.length}</button><button className={`button ${tab === 'local' ? 'primary' : 'outline'}`} disabled={disabled} onClick={() => { setTab('local'); setSelected([]); setConfirmation(null); }}>本地可上传 · {tracks.length}</button></div>
       <label>搜索歌曲<input aria-label="搜索在线曲库歌曲" value={query} disabled={working} onChange={(event) => setQuery(event.target.value)} placeholder="歌曲 / 歌手 / 专辑" /></label>
       <div className="source-list">{visible.map((track) => <label className="source-song" key={track.id}><input type="checkbox" checked={selected.includes(track.id)} disabled={disabled} onChange={(event) => { setSelected((previous) => event.target.checked ? [...previous, track.id] : previous.filter((id) => id !== track.id)); setConfirmation(null); }} /><span><strong>{track.title}</strong><small>{track.artist} · {track.lyrics.length ? `${track.lyrics.length} 行歌词` : '无歌词'} · {track.lyrics.some((line) => line.translation) ? '有中文' : '无中文'}</small></span>{tab === 'remote' && tracks.some((local) => local.id === track.id) && <Check size={14} />}</label>)}{!visible.length && <p className="field-help">暂无歌曲。可切换到本地列表，选择要上传的歌曲。</p>}</div>
-      <div className="storage-buttons"><button className="button outline" disabled={disabled || !visible.length} onClick={() => { setSelected(visible.map((track) => track.id)); setConfirmation(null); }}>选择当前列表</button><button className="button primary" disabled={disabled || !currentSelection.length || tab === 'local' && !info.canWrite} onClick={() => setConfirmation(tab === 'local' ? 'upload' : 'download')}>{tab === 'local' ? <Upload size={14} /> : <Download size={14} />}{tab === 'local' ? '上传 / 补充到线上' : '下载 / 补充到本地'} · {currentSelection.length}</button></div>
-      {confirmation && <div className="storage-move-confirm"><strong>{confirmation === 'upload' ? `确认上传 ${currentSelection.length} 首？` : `确认下载 / 补充 ${currentSelection.length} 首？`}</strong><p>{confirmation === 'upload' ? `将把所选音频、封面、歌词和译文发送到 ${config.baseUrl}。其中 ${existingRemote} 首线上已有相同音频，将更新其歌曲信息及歌词；服务器保留历史版本。其他设备已修改的版本会拒绝覆盖，请刷新后重新核对。` : '新歌曲下载并校验后加入当前本地库；已有同音频歌曲只补充缺失的封面、原文及按时间和原文对应的中文，不覆盖本地已有译文、收藏或播放记录。单首下载中断需重试该首，已保存歌曲保留。'}</p><button className="button primary" disabled={disabled} onClick={() => void transfer()}>确认{confirmation === 'upload' ? '上传' : '下载并保存'}</button><button className="text-button" disabled={disabled} onClick={() => setConfirmation(null)}>取消</button></div>}
+      <div className="storage-buttons"><button className="button outline" disabled={disabled || !visible.length} onClick={() => { setSelected(visible.map((track) => track.id)); setConfirmation(null); }}>选择当前列表</button><button className="button primary" disabled={disabled || !currentSelection.length || tab === 'local' && !info.canWrite} onClick={() => setConfirmation(tab === 'local' ? 'upload' : 'download')}>{tab === 'local' ? <Upload size={14} /> : <Download size={14} />}{tab === 'local' ? '上传到线上' : '下载 / 补充到本地'} · {currentSelection.length}</button></div>
+      {confirmation && <div className="storage-move-confirm"><strong>{confirmation === 'upload' ? `确认上传 ${currentSelection.length} 首？` : `确认下载 / 补充 ${currentSelection.length} 首？`}</strong><p>{confirmation === 'upload' ? `将把所选音频、封面、歌词和译文发送到 ${config.baseUrl}。其中 ${existingRemote} 首线上已有相同音频，核验通过后直接返回已有歌曲并计为成功，不重复传音频、不覆盖歌词。需要同步后续保存的歌词和译文时，可开启自动上传。` : '新歌曲下载并校验后加入当前本地库；已有同音频歌曲只补充缺失的封面、原文及按时间和原文对应的中文，不覆盖本地已有译文、收藏或播放记录。单首下载中断需重试该首，已保存歌曲保留。'}</p><button className="button primary" disabled={disabled} onClick={() => void transfer()}>确认{confirmation === 'upload' ? '上传' : '下载并保存'}</button><button className="text-button" disabled={disabled} onClick={() => setConfirmation(null)}>取消</button></div>}
     </>}
-    {status && <p className="field-help" role="status">{status}</p>}
-    <p className="field-help">自动核对不消耗 AI token；相同文件跳过，断网后重试，冲突保留两端。不会自动下载线上独有歌曲或删除任一端歌曲。旧配置升级后不擅自开启；安卓自动上传需保持应用前台，锁屏 / 后台暂停，回到前台继续。切换曲库或手动传输前请先暂停自动上传。公开分享请只发只读密钥，写入密钥应仅由你自己保管。</p>
+    <p className="field-help">自动核对不消耗 AI token；相同文件跳过，断网后重试，冲突保留两端。不会预先下载未点播的歌曲，也不会删除任一端歌曲。旧配置升级后不擅自开启；安卓自动上传需保持应用前台，锁屏 / 后台暂停，回到前台继续。切换曲库或手动传输前请先暂停自动上传。公开读取开启时分享地址即可听歌；写入密钥仅由你自己保管。</p>
+    </details>
   </section>;
 }

@@ -33,6 +33,7 @@ async function main() {
   async function configure(page) {
     await page.getByRole('button', { name: '偏好设置', exact: true }).first().click();
     const source = page.locator('.online-source-settings');
+    await source.locator('.cloud-advanced > summary').click();
     await page.waitForFunction(() => document.querySelector('[aria-label="在线音源链接"]')?.value);
     await source.getByLabel('在线音源链接', { exact: true }).fill('https://library.fixture.test/api/');
     await source.getByLabel('在线曲库访问密钥', { exact: true }).fill(token);
@@ -46,17 +47,17 @@ async function main() {
     await page.getByRole('button', { name: '先听听示例', exact: true }).click(); await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 3);
     let source = await configure(page);
     await source.getByRole('button', { name: '本地可上传 · 3', exact: true }).click(); await source.getByRole('button', { name: '选择当前列表', exact: true }).click();
-    await source.getByRole('button', { name: '上传 / 补充到线上 · 3', exact: true }).click();
+    await source.getByRole('button', { name: '上传到线上 · 3', exact: true }).click();
     assert.equal((await request('/info')).trackCount, 0);
     await source.getByRole('button', { name: '取消', exact: true }).click(); assert.equal((await request('/info')).trackCount, 0);
-    await source.getByRole('button', { name: '上传 / 补充到线上 · 3', exact: true }).click(); await source.getByRole('button', { name: '确认上传', exact: true }).click();
+    await source.getByRole('button', { name: '上传到线上 · 3', exact: true }).click(); await source.getByRole('button', { name: '确认上传', exact: true }).click();
     await source.getByRole('status').filter({ hasText: '上传完成：3 首' }).waitFor({ timeout: 60000 }); assert.equal((await request('/info')).trackCount, 3);
     assert.ok(!(await fs.readFile(path.join(directory, 'device-a/online-source.json'), 'utf8')).includes(token));
     const uploaded = (await request('/tracks')).tracks;
     await application.close(); application = null;
     page = await launch('device-b'); await page.waitForSelector('.empty-state'); source = await configure(page);
     await source.getByRole('button', { name: '选择当前列表', exact: true }).click(); await source.getByRole('button', { name: '下载 / 补充到本地 · 3', exact: true }).click();
-    assert.equal(await page.locator('.track-row').count(), 0);
+    assert.equal((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).length, 0);
     await source.getByRole('button', { name: '确认下载并保存', exact: true }).click();
     await source.getByRole('status').filter({ hasText: '下载 / 补充完成：3 首' }).waitFor({ timeout: 60000 }); assert.equal(await page.locator('.track-row').count(), 3);
     const records = await page.evaluate(() => window.tingyuDesktop.listLibraryTracks());
@@ -66,8 +67,9 @@ async function main() {
     await request(`/uploads/${pending.id}/finish`, {});
     await source.getByRole('button', { name: '本地可上传 · 3', exact: true }).click();
     await source.locator('.source-song').filter({ hasText: rival.metadata.title }).getByRole('checkbox').check();
-    await source.getByRole('button', { name: '上传 / 补充到线上 · 1', exact: true }).click(); await source.getByRole('button', { name: '确认上传', exact: true }).click();
-    await source.getByRole('status').filter({ hasText: '线上版本或传输检查点已变化' }).waitFor(); assert.equal((await request(`/tracks/${rival.metadata.id}`)).revision, 2);
+    await source.getByRole('button', { name: '上传到线上 · 1', exact: true }).click(); await source.getByRole('button', { name: '确认上传', exact: true }).click();
+    await source.getByRole('status').filter({ hasText: '上传完成：1 首' }).waitFor(); assert.equal((await request(`/tracks/${rival.metadata.id}`)).revision, 2);
+    assert.equal((await request(`/tracks/${rival.metadata.id}`)).metadata.album, 'Changed by another device');
     await source.getByRole('button', { name: '保存并连接 / 刷新', exact: true }).click(); await source.getByRole('status').filter({ hasText: '连接成功' }).waitFor();
     await page.locator('.startup-screen').waitFor({ state: 'detached' }); await source.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(root, 'test-results/online-source-settings.png') });
     await page.setViewportSize({ width: 412, height: 915 }); await source.locator('h3').scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(root, 'test-results/online-source-mobile.png') });
@@ -75,7 +77,7 @@ async function main() {
     page = await launch('device-b'); await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 3); await page.getByRole('button', { name: '偏好设置', exact: true }).first().click();
     await page.waitForFunction(() => document.querySelector('[aria-label="在线曲库访问密钥"]')?.value);
     assert.equal(await page.getByLabel('在线曲库访问密钥', { exact: true }).inputValue(), token); assert.deepEqual(errors, []);
-    console.log('PASS local real HTTP + Electron IPC: no upload before confirmation, 3 original demo songs/cover/bilingual lyrics shared across two isolated devices, SHA-256, encrypted credentials/restart, stale-revision rejection and no paid AI/renderer errors');
+    console.log('PASS local real HTTP + Electron IPC: confirmed uploads, 3 demo songs/cover/bilingual lyrics across isolated devices, SHA-256, encrypted credentials/restart, duplicate upload success without overwriting remote edits and no paid AI/renderer errors');
   } finally { if (application) await application.close(); backend.kill(); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

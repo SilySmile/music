@@ -114,7 +114,11 @@ public class NativePlaybackPlugin extends Plugin {
     public void setQueue(PluginCall call) {
         try {
             JSONArray tracks = call.getArray("tracks"); if (tracks == null || tracks.length() == 0) throw new Exception("播放队列为空");
-            for (int index = 0; index < tracks.length(); index++) if (!audio(tracks.getJSONObject(index).getString("id"), false).isFile()) throw new Exception("后台音频尚未准备完成，请保持应用前台稍候");
+            for (int index = 0; index < tracks.length(); index++) {
+                JSONObject track = tracks.getJSONObject(index);
+                if (track.has("sourceUrl")) CloudAudioSource.validate(track.getString("id"), track.getString("sourceUrl"));
+                else if (!audio(track.getString("id"), false).isFile()) throw new Exception("后台音频尚未准备完成，请保持应用前台稍候");
+            }
             File file = new File(getContext().getFilesDir(), "playback-queue.json");
             android.util.AtomicFile atomic = new android.util.AtomicFile(file); FileOutputStream stream = null;
             try { stream = atomic.startWrite(); stream.write(tracks.toString().getBytes(StandardCharsets.UTF_8)); atomic.finishWrite(stream); }

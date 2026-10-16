@@ -30,7 +30,7 @@ export async function runImportTask(task: ImportTask, files: File[], signal: Abo
   await saveTransfer(task);
   try {
     const result = await importFiles(files, onProgress, {
-      signal, completed: new Set(task.completed), collect: false,
+      signal, completed: new Set(task.completed), collect: false, findExisting: getTrack,
       onTotal: async (total) => { task.total = total; await saveTransfer(task); },
       onTrack: async (track, entry) => { await commitImportedTrack(track, task, entry); },
     });

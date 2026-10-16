@@ -1,8 +1,8 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import type { Track } from '../types';
 import type { PlaybackMode } from './playback';
-export type AndroidPlaybackState = { active: boolean; id?: string; playing?: boolean; position?: number; duration?: number; mode?: PlaybackMode; volume?: number; deadline?: number; finishTrack?: boolean; error?: string };
-type QueueOptions = { tracks: { id: string; title: string; artist: string; album: string; duration: number }[]; id: string; position: number; playing: boolean; mode: PlaybackMode; volume: number; fade: number; deadline: number; finishTrack: boolean };
+export type AndroidPlaybackState = { active: boolean; id?: string; playing?: boolean; position?: number; duration?: number; mode?: PlaybackMode; volume?: number; deadline?: number; finishTrack?: boolean; error?: string; cloudPlayed?: string[] };
+type QueueOptions = { tracks: { id: string; title: string; artist: string; album: string; duration: number; sourceUrl?: string }[]; id: string; position: number; playing: boolean; mode: PlaybackMode; volume: number; fade: number; deadline: number; finishTrack: boolean };
 interface PlaybackPlugin {
   notifications(): Promise<void>;
   cached(options: { tracks: { id: string; size: number }[] }): Promise<{ ids: string[] }>;
@@ -18,6 +18,7 @@ export const androidPlayer = registerPlugin<PlaybackPlugin>('NativePlayback');
 export const isAndroidPlayer = () => Capacitor.getPlatform() === 'android';
 
 export async function prepareAndroidQueue(tracks: Track[], onProgress: (message: string) => void, signal: AbortSignal) {
+  tracks = tracks.filter((track) => !track.cloud);
   const { ids } = await androidPlayer.cached({ tracks: tracks.map((track) => ({ id: track.id, size: track.audio.size })) });
   const cached = new Set(ids);
   for (const [index, track] of tracks.entries()) {
@@ -35,5 +36,5 @@ export async function prepareAndroidQueue(tracks: Track[], onProgress: (message:
   }
 }
 export function androidQueueOptions(tracks: Track[], id: string, position: number, playing: boolean, mode: PlaybackMode, volume: number, fade: number, sleep: { deadline: number; behavior: 'immediate' | 'finish-track' } | null): QueueOptions {
-  return { tracks: tracks.map(({ id, title, artist, album, duration }) => ({ id, title, artist, album, duration })), id, position, playing, mode, volume, fade, deadline: sleep?.deadline ?? 0, finishTrack: sleep?.behavior === 'finish-track' };
+  return { tracks: tracks.map(({ id, title, artist, album, duration, cloud }) => ({ id, title, artist, album, duration, ...(cloud?.publicRead ? { sourceUrl: cloud.streamUrl } : {}) })), id, position, playing, mode, volume, fade, deadline: sleep?.deadline ?? 0, finishTrack: sleep?.behavior === 'finish-track' };
 }

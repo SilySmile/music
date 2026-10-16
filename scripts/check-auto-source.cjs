@@ -37,6 +37,7 @@ async function main() {
   async function settings(page) {
     await page.getByRole('button', { name: '偏好设置', exact: true }).first().click();
     const source = page.locator('.online-source-settings');
+    await source.locator('.cloud-advanced > summary').click();
     await page.waitForFunction(() => document.querySelector('[aria-label="在线音源链接"]')?.value);
     return source;
   }

@@ -60,6 +60,22 @@ describe('Android user-selected music library', () => {
     await expect(storage.getTracks()).rejects.toThrow('目录授权失效');
     expect(plugin.list).not.toHaveBeenCalled();
   });
+  it('saves a heard cloud song into the selected library with lyrics, and cancels corrupted downloads', async () => {
+    plugin.info.mockResolvedValue({ storageMode: 'folder', legacyMigrated: true, libraryId: 'current-library' });
+    plugin.finish.mockResolvedValue(record());
+    const storage = await import('./storage');
+    const { audio: _audio, ...metadata } = track;
+    const saved = await storage.saveStreamedTrack(metadata, { audio: record().audio }, async () => bytes, new AbortController().signal);
+    expect(saved.id).toBe(track.id);
+    expect(plugin.begin.mock.calls[0][0].target).toBeUndefined();
+    expect(plugin.begin.mock.calls[0][0].metadata.lyrics[0].translation).toBe('光');
+    expect(plugin.write).toHaveBeenCalledWith({ token: 'upload', kind: 'audio', offset: 0, data: btoa(String.fromCharCode(...bytes)) });
+    expect(plugin.finish).toHaveBeenCalledWith({ token: 'upload', hashes: { audio: track.id } });
+    plugin.finish.mockClear();
+    await expect(storage.saveStreamedTrack(metadata, { audio: record().audio }, async () => new Uint8Array(bytes.length), new AbortController().signal)).rejects.toThrow('SHA-256');
+    expect(plugin.finish).not.toHaveBeenCalled();
+    expect(plugin.cancel).toHaveBeenCalledWith({ token: 'upload' });
+  });
   it('continues to persist the internal database until a folder is explicitly selected', async () => {
     const storage = await import('./storage');
     await storage.saveTracks([track]); await storage.cacheTranslation('translation', '译文');

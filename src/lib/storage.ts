@@ -13,15 +13,6 @@ const database = openDB('tingyu-library', 3, {
   },
 });
 
-function mergeImportedTrack(existing: Track | undefined, track: Track): Track {
-  if (!existing) return track;
-  const matching = new Map(existing.lyrics.map((line) => [`${Math.round(line.time * 100)}|${line.text.trim()}`, line.translation]));
-  const lyrics = track.lyrics.length ? track.lyrics.map((line) => ({ ...line, translation: line.translation || matching.get(`${Math.round(line.time * 100)}|${line.text.trim()}`) })) : existing.lyrics;
-  const newChinese = track.lyrics.some((line) => line.translation);
-  const retainedChinese = lyrics.some((line) => line.translation);
-  return { ...existing, ...track, lyrics, lyricsSource: track.lyrics.length ? track.lyricsSource || existing.lyricsSource : existing.lyricsSource, translationSource: newChinese ? track.translationSource || existing.translationSource : retainedChinese ? existing.translationSource : undefined, translationAudit: newChinese ? track.translationAudit : retainedChinese ? existing.translationAudit : undefined, cover: track.cover ?? existing.cover, favorite: existing.favorite || track.favorite, lastPlayed: Math.max(existing.lastPlayed ?? 0, track.lastPlayed ?? 0) || undefined, addedAt: existing.addedAt };
-}
-
 let mobileBridge: ReturnType<typeof androidLibraryBridge> | undefined;
 let mobileReady: Promise<void> | undefined;
 let mobileLibraryKey = 'database';
@@ -140,6 +131,34 @@ export async function saveTracks(tracks: Track[]) {
   await transaction.done;
 }
 
+export async function saveStreamedTrack(metadata: Omit<Track, 'audio' | 'cover'>, media: { audio: { size: number; type: string; sha256: string }; cover?: { size: number; type: string; sha256: string } }, reader: (kind: 'audio' | 'cover', offset: number, length: number) => Promise<Uint8Array>, signal: AbortSignal): Promise<Track> {
+  await ensureBackend(); signal.throwIfAborted();
+  const bridge = desktop();
+  if (bridge) await ensureNative();
+  const token = bridge ? await bridge.beginLibraryTrack(metadata, media.audio, media.cover) : undefined;
+  const blobs: Partial<Record<'audio' | 'cover', Blob>> = {};
+  const hashes: Partial<Record<'audio' | 'cover', string>> = {};
+  try {
+    for (const kind of ['audio', 'cover'] as const) {
+      const descriptor = media[kind]; if (!descriptor) continue;
+      const hash = sha256.create(); const parts: BlobPart[] = [];
+      for (let offset = 0; offset < descriptor.size; offset += 1024 * 1024) {
+        signal.throwIfAborted(); const length = Math.min(1024 * 1024, descriptor.size - offset);
+        const bytes = await reader(kind, offset, length);
+        if (bytes.length !== length) throw new Error('云端歌曲不完整，未加入本地音乐库。');
+        hash.update(bytes);
+        if (bridge && token) await bridge.writeLibraryChunk(token, kind, offset, bytes); else parts.push(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+      }
+      hashes[kind] = Array.from(hash.digest(), (value) => value.toString(16).padStart(2, '0')).join('');
+      if (hashes[kind] !== descriptor.sha256) throw new Error('云端歌曲 SHA-256 不符，未加入本地音乐库。');
+      if (!bridge) blobs[kind] = new Blob(parts, { type: descriptor.type });
+    }
+    signal.throwIfAborted();
+    if (bridge && token) { const record = await bridge.finishLibraryTrack(token, hashes); return hydrate(record); }
+    const track = { ...metadata, audio: blobs.audio!, cover: blobs.cover }; await saveTracks([track]); return track;
+  } catch (error) { if (bridge && token) await bridge.cancelLibraryTrack(token).catch(() => {}); throw error; }
+}
+
 export async function deleteTrack(id: string) {
   await ensureBackend();
   if (desktop()) { await ensureNative(); await desktop()!.removeLibraryTrack(id); nativeTracks.delete(id); return; }
@@ -204,8 +223,7 @@ export async function commitImportedTrack(track: Track | undefined, task: Import
     await ensureNative();
     if (track) {
       const existing = await getTrack(track.id);
-      const merged = mergeImportedTrack(existing, track);
-      await saveNativeTrack(merged);
+      if (!existing) await saveNativeTrack(track);
     }
     const completed = [...new Set([...task.completed, entry])];
     await saveTransfer({ ...task, completed, updatedAt: Date.now() });
@@ -215,8 +233,7 @@ export async function commitImportedTrack(track: Track | undefined, task: Import
   const transaction = (await database).transaction(['tracks', 'transfers'], 'readwrite');
   if (track) {
     const existing = await transaction.objectStore('tracks').get(track.id) as Track | undefined;
-    const merged = mergeImportedTrack(existing, track);
-    await transaction.objectStore('tracks').put(merged);
+    if (!existing) await transaction.objectStore('tracks').put(track);
   }
   const completed = [...new Set([...task.completed, entry])];
   const next = { ...task, completed, updatedAt: Date.now() };

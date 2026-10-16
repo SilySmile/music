@@ -17,6 +17,7 @@ export type Track = {
   favorite: boolean;
   addedAt: number;
   lastPlayed?: number;
+  cloud?: { source: string; record: import('./lib/onlineSource').SourceTrack; streamUrl: string; publicRead: boolean };
 };
 
 export type LibraryView = 'all' | 'favorites' | 'recent';

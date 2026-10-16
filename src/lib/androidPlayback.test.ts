@@ -21,4 +21,13 @@ describe('Android foreground playback preparation', () => {
     expect(options.finishTrack).toBe(true); expect(options.deadline).toBe(1700000000000); expect(options.position).toBe(12);
     expect(options.tracks[0]).not.toHaveProperty('audio'); expect(options.tracks[0]).not.toHaveProperty('lyrics');
   });
+  it('streams cloud queue entries without preparing or downloading unheard audio', async () => {
+    const streamUrl = `https://example.com/music-library/tracks/${track.id}/stream/audio`;
+    const cloud = { ...track, cloud: { source: 'https://example.com/music-library/', streamUrl, publicRead: true, record: {} as NonNullable<Track['cloud']>['record'] } };
+    const read = vi.spyOn(cloud.audio, 'slice');
+    await prepareAndroidQueue([cloud], () => {}, new AbortController().signal);
+    expect(plugin.write).not.toHaveBeenCalled(); expect(read).not.toHaveBeenCalled();
+    expect(androidQueueOptions([cloud], cloud.id, 0, true, 'list', 1, 0, null).tracks[0].sourceUrl).toBe(streamUrl);
+    read.mockRestore();
+  });
 });

@@ -44,6 +44,55 @@ class LibraryTests(unittest.TestCase):
                 self.library.authorize(header, write)
             self.assertEqual(error.exception.status, code)
 
+    def test_public_read_is_opt_in_and_never_grants_anonymous_upload(self):
+        with open(self.auth) as stream:
+            auth = json.load(stream)
+        auth["publicRead"] = True
+        with open(self.auth, "w") as stream:
+            json.dump(auth, stream)
+        self.assertFalse(self.library.authorize(None))
+        self.assertTrue(self.call("GET", "/info")["publicRead"])
+        for header, write in ((None, True), ("Bearer wrong-token-for-tests-only", False)):
+            with self.assertRaises(module.ApiError) as error:
+                self.library.authorize(header, write)
+            self.assertEqual(error.exception.status, 401)
+
+    def test_public_stream_full_head_and_range_and_protected_upload(self):
+        task = self.upload()
+        self.call("POST", "/uploads/" + task["id"] + "/finish")
+        with open(self.auth) as stream:
+            auth = json.load(stream)
+        auth["publicRead"] = True
+        with open(self.auth, "w") as stream:
+            json.dump(auth, stream)
+        server = module.Server(("127.0.0.1", 0), module.Handler)
+        server.library = self.library
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        endpoint = "http://127.0.0.1:" + str(server.server_address[1])
+        route = endpoint + "/tracks/" + self.identifier + "/stream/audio"
+        try:
+            with urlopen(endpoint + "/tracks", timeout=5) as response:
+                self.assertEqual(json.load(response)["total"], 1)
+            with urlopen(route, timeout=5) as response:
+                self.assertEqual(response.read(), self.content)
+            with urlopen(Request(route, method="HEAD"), timeout=5) as response:
+                self.assertEqual(int(response.headers["Content-Length"]), len(self.content))
+                self.assertEqual(response.read(), b"")
+            for header, expected in (("bytes=2-8", self.content[2:9]), ("bytes=-4", self.content[-4:]), ("bytes=3-", self.content[3:])):
+                with urlopen(Request(route, headers={"Range": header}), timeout=5) as response:
+                    self.assertEqual(response.status, 206)
+                    self.assertEqual(response.read(), expected)
+                    self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+            for request, code in ((Request(route, headers={"Range": "bytes=99999-"}), 416), (Request(endpoint + "/uploads", data=b"{}", headers={"Content-Type": "application/json"}), 401)):
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(request, timeout=5)
+                self.assertEqual(error.exception.code, code)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_resume_atomic_visibility_bilingual_persistence_and_deduplication(self):
         task = self.call("POST", "/uploads", self.value)
         self.assertEqual(self.call("GET", "/tracks")["total"], 0)
@@ -73,6 +122,7 @@ class LibraryTests(unittest.TestCase):
             self.call("POST", "/uploads/" + rival["id"] + "/finish")
         self.assertEqual(conflict.exception.status, 409)
         self.assertEqual(self.library.track(self.identifier)["revision"], 1)
+
         other = dict(self.value, expectedRevision=1, audio=dict(self.value["audio"], sha256="a" * 64))
         with self.assertRaises(module.ApiError):
             self.call("POST", "/uploads", other)
@@ -86,6 +136,16 @@ class LibraryTests(unittest.TestCase):
             self.call("POST", "/uploads/" + task["id"] + "/finish")
         self.assertEqual(tampered.exception.status, 422)
         self.assertEqual(self.library.track(self.identifier)["revision"], 1)
+
+    def test_duplicate_import_returns_existing_without_upload_or_metadata_overwrite(self):
+        task = self.upload()
+        record = self.call("POST", "/uploads/" + task["id"] + "/finish")
+        duplicate = dict(self.value, metadata=dict(self.value["metadata"], title="Renamed duplicate", lyrics=[]), audio=dict(self.value["audio"], type="audio/mpeg"))
+        self.assertEqual(self.call("POST", "/uploads", duplicate), {"existing": record})
+        self.assertEqual(self.library.track(self.identifier), record)
+        with self.library.connection() as database:
+            self.assertEqual(database.execute("SELECT COUNT(*) FROM uploads").fetchone()[0], 1)
+            self.assertEqual(database.execute("SELECT COUNT(*) FROM history").fetchone()[0], 1)
 
     def test_path_traversal_and_invalid_offsets_are_rejected(self):
         for value in ("../secret", "/etc/passwd", "a" * 63):

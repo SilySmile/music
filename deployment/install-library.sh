@@ -28,7 +28,7 @@ directory = sys.argv[1]
 writer = secrets.token_urlsafe(32)
 reader = secrets.token_urlsafe(32)
 with open(os.path.join(directory, 'library-auth.json'), 'x') as stream:
-    json.dump({'writers': [hashlib.sha256(writer.encode()).hexdigest()], 'readers': [hashlib.sha256(reader.encode()).hexdigest()]}, stream)
+    json.dump({'publicRead': os.environ.get('XQ_LIBRARY_PUBLIC_READ') == '1', 'writers': [hashlib.sha256(writer.encode()).hexdigest()], 'readers': [hashlib.sha256(reader.encode()).hexdigest()]}, stream)
 for name, token in [('owner', writer), ('reader', reader)]:
     filename = '/root/xianqiji-library-' + name + '.xqsource'
     with open(filename, 'x') as stream:
@@ -43,11 +43,15 @@ import json
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
+with open('/etc/xianqiji-library/auth.json') as stream:
+    public = json.load(stream).get('publicRead') is True
 try:
-    urlopen('http://127.0.0.1:8765/info', timeout=10)
-    raise SystemExit('Health check failed: unauthenticated access was accepted')
+    with urlopen('http://127.0.0.1:8765/info', timeout=10) as response:
+        info = json.load(response)
+    if not public or info.get('publicRead') is not True or info.get('canWrite') is not False:
+        raise SystemExit('Health check failed: unexpected anonymous permissions')
 except HTTPError as error:
-    if error.code != 401:
+    if error.code != 401 or public:
         raise
 print('READY: HTTPS music-library route installed; existing data and access keys preserved.')
 print('On a fresh install, privately copy /root/xianqiji-library-owner.xqsource to the app. Never share the owner file.')

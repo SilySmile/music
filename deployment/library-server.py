@@ -124,10 +124,12 @@ class Library:
             database.close()
 
     def authorize(self, header, write=False):
-        require(isinstance(header, str) and header.startswith("Bearer ") and 20 <= len(header[7:]) <= 1000, "Authentication required", 401)
-        candidate = hashlib.sha256(header[7:].encode("utf-8")).hexdigest()
         with open(self.auth_file, encoding="utf-8") as stream:
             auth = json.load(stream)
+        if not header and not write and auth.get("publicRead") is True:
+            return False
+        require(isinstance(header, str) and header.startswith("Bearer ") and 20 <= len(header[7:]) <= 1000, "Authentication required", 401)
+        candidate = hashlib.sha256(header[7:].encode("utf-8")).hexdigest()
         writer = any(hmac.compare_digest(candidate, value) for value in auth.get("writers", []))
         reader = writer or any(hmac.compare_digest(candidate, value) for value in auth.get("readers", []))
         require(reader, "Invalid access token", 401)
@@ -183,7 +185,9 @@ class Library:
         if method == "GET" and route == "/info":
             with self.connection() as database:
                 count = database.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
-            return {"product": "xianqiji-online-library", "schema": 1, "canWrite": writer, "trackCount": count, "chunkBytes": CHUNK, "verification": True}
+            with open(self.auth_file, encoding="utf-8") as stream:
+                public = json.load(stream).get("publicRead") is True
+            return {"product": "xianqiji-online-library", "schema": 1, "canWrite": writer, "trackCount": count, "chunkBytes": CHUNK, "verification": True, "publicRead": public, "streaming": True}
         if method == "GET" and route == "/tracks":
             try:
                 offset = integer(int(query.get("offset", ["0"])[0]))
@@ -234,6 +238,12 @@ class Library:
             require(value["metadata"]["id"] == value["audio"]["sha256"], "Song ID does not match audio")
             value["expectedRevision"] = integer(body.get("expectedRevision"))
             with LOCK, self.connection() as database:
+                if value["expectedRevision"] == 0:
+                    existing = database.execute("SELECT payload FROM tracks WHERE id=?", (value["metadata"]["id"],)).fetchone()
+                    if existing:
+                        existing = json.loads(existing[0])
+                        if existing["audio"]["sha256"] == value["audio"]["sha256"] and existing["audio"]["size"] == value["audio"]["size"] and self.verify_media(existing["audio"]):
+                            return {"existing": existing}
                 require(self.revision(value["metadata"]["id"], database) == value["expectedRevision"], "Remote song changed; refresh and confirm again", 409)
                 previous = database.execute("SELECT payload FROM tracks WHERE id=?", (value["metadata"]["id"],)).fetchone()
                 if previous:
@@ -321,12 +331,69 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.handle_api()
 
+    def do_HEAD(self):
+        self.handle_api()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Range")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def stream_media(self, identifier, kind):
+        record = self.server.library.track(identifier)
+        require(kind in record, "Media not found", 404)
+        media = record[kind]
+        filename = self.server.library.blob(media["sha256"])
+        require(os.path.isfile(filename) and os.path.getsize(filename) == media["size"], "Stored media incomplete", 500)
+        start, end = 0, media["size"] - 1
+        range_header = self.headers.get("Range")
+        if range_header:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header)
+            require(match is not None and any(match.groups()), "Invalid media range", 416)
+            if match.group(1):
+                start = int(match.group(1))
+                if match.group(2):
+                    end = min(end, int(match.group(2)))
+            else:
+                start = max(0, media["size"] - int(match.group(2)))
+            require(0 <= start <= end < media["size"], "Invalid media range", 416)
+        self.send_response(206 if range_header else 200)
+        self.send_header("Content-Type", media["type"])
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Connection", "close")
+        if range_header:
+            self.send_header("Content-Range", "bytes {}-{}/{}".format(start, end, media["size"]))
+        self.end_headers()
+        if self.command != "HEAD":
+            with open(filename, "rb") as stream:
+                stream.seek(start)
+                remaining = end - start + 1
+                while remaining:
+                    content = stream.read(min(CHUNK, remaining))
+                    if not content:
+                        break
+                    self.wfile.write(content)
+                    remaining -= len(content)
+        self.close_connection = True
+
     def do_POST(self):
         self.handle_api()
 
     def handle_api(self):
         try:
-            writer = self.server.library.authorize(self.headers.get("Authorization"), self.command != "GET")
+            writer = self.server.library.authorize(self.headers.get("Authorization"), self.command not in ("GET", "HEAD"))
+            stream_match = re.fullmatch(r"/tracks/([a-f0-9]{64})/stream/(audio|cover)", urlsplit(self.path).path)
+            if stream_match and self.command in ("GET", "HEAD"):
+                self.stream_media(*stream_match.groups())
+                return
             require(self.headers.get("Transfer-Encoding") is None, "Chunked requests unsupported")
             body = {}
             if self.command == "POST":
@@ -358,10 +425,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(encoded)
+        if self.command != "HEAD":
+            self.wfile.write(encoded)
         self.close_connection = True
 
 

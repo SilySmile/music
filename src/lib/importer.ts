@@ -5,7 +5,7 @@ import type { Track } from '../types';
 import { decodeText, mergeTranslation, parseLyrics } from './lyrics';
 
 type Entry = { name: string; size: number; id: string; group: string; read: (signal?: AbortSignal) => Promise<Blob> };
-type ImportOptions = { signal?: AbortSignal; completed?: Set<string>; onTotal?(count: number): Promise<void>; onTrack?(track: Track | undefined, entry: string): Promise<void>; collect?: boolean };
+type ImportOptions = { signal?: AbortSignal; completed?: Set<string>; findExisting?(id: string): Promise<Track | undefined>; onTotal?(count: number): Promise<void>; onTrack?(track: Track | undefined, entry: string): Promise<void>; collect?: boolean };
 const audioPattern = /\.(mp3|flac|wav|m4a|aac|ogg|opus)$/i;
 const mimeTypes: Record<string, string> = { mp3: 'audio/mpeg', flac: 'audio/flac', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', opus: 'audio/ogg' };
 configure({ useWebWorkers: false });
@@ -42,6 +42,7 @@ export async function importFiles(files: File[], onProgress: (message: string) =
   if (!audioEntries.length) throw new Error('没有找到歌曲。请选择包含音频文件的 ZIP，或直接选择歌曲和歌词。');
   await options.onTotal?.(audioEntries.length);
   const tracks: Track[] = [];
+  const imported = new Map<string, Track>();
   const warnings: string[] = [];
   const restoredMetadata = new Map<string, Partial<Track>>();
   for (const entry of entries.filter((entry) => /(^|\/)tingyu-library\.json$/i.test(entry.name))) {
@@ -81,6 +82,15 @@ export async function importFiles(files: File[], onProgress: (message: string) =
         hasher.update(new Uint8Array(await audio.slice(offset, offset + 4 * 1024 * 1024).arrayBuffer()));
       }
       const id = Array.from(hasher.digest(), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      const existing = imported.get(id) ?? await options.findExisting?.(id);
+      if (existing) {
+        options.signal?.throwIfAborted();
+        onProgress(`音频已存在，导入成功 · ${existing.title}`);
+        await options.onTrack?.(existing, entry.id);
+        if (options.collect !== false && !imported.has(id)) tracks.push(existing);
+        imported.set(id, existing);
+        continue;
+      }
       const filename = entry.name.replace(/\\/g, '/').split('/').at(-1)!.replace(audioPattern, '');
       const parts = filename.split(' - ');
       let title = parts.length > 1 ? parts.slice(1).join(' - ') : filename;
@@ -106,6 +116,7 @@ export async function importFiles(files: File[], onProgress: (message: string) =
       const track = { id, title, artist, album, duration, format: format.toUpperCase(), audio, cover, lyrics, lyricsSource: lyrics.length ? '本地导入' : undefined, translationSource: lyrics.some((line) => line.translation) ? '本地译文' : undefined, favorite: false, addedAt: Date.now() + index, ...restoredMetadata.get(id) };
       options.signal?.throwIfAborted();
       await options.onTrack?.(track, entry.id);
+      imported.set(id, track);
       if (options.collect !== false) tracks.push(track);
     } catch (error) {
       if (options.signal?.aborted) throw error;

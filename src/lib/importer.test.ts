@@ -33,6 +33,16 @@ describe('music archive import', () => {
     const bytes = await zip.generateAsync({ type: 'uint8array' });
     await expect(importFiles([new File([Uint8Array.from(bytes)], 'empty.zip')], () => {})).rejects.toThrow('没有找到歌曲');
   });
+  it('returns the existing audio by its full content hash even after renaming, without rereading sidecars', async () => {
+    const bytes = await fs.readFile('public/demo/弦栖霁示例.zip');
+    const original = (await importFiles([new File([bytes], 'original.zip')], () => {})).tracks[0];
+    const progress: string[] = [];
+    const results = await importFiles([new File([original.audio], 'different-name.wav'), new File([original.audio], 'another-name.wav'), new File(['[00:00]不得覆盖已有译文'], 'different-name.lrc')], (message) => progress.push(message), { findExisting: async (id) => id === original.id ? original : undefined });
+    expect(results.tracks).toEqual([original]);
+    expect(results.tracks[0]).toBe(original);
+    expect(results.warnings).toEqual([]);
+    expect(progress.filter((message) => message.includes('音频已存在'))).toHaveLength(2);
+  });
   it('skips completed songs after pause and rereads only unfinished songs', async () => {
     const bytes = await fs.readFile('public/demo/弦栖霁示例.zip');
     const files = [new File([bytes], 'resume.zip', { lastModified: 1234 })];

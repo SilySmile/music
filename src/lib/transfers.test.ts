@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import fs from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { createExportTask, createImportTask, filesFingerprint, runImportTask } from './transfers';
-import { getTracks, getTransfers } from './storage';
+import { getTracks, getTransfers, patchTrack } from './storage';
 
 describe('durable import tasks', () => {
   it('commits songs and checkpoints together and restores from a newly loaded task', async () => {
@@ -28,6 +28,23 @@ describe('durable import tasks', () => {
     expect(await filesFingerprint(first)).not.toBe(await filesFingerprint(different));
     const task = await createImportTask(first);
     await expect(runImportTask(task, different, new AbortController().signal, () => {})).rejects.toThrow('不一致');
+  });
+  it('marks repeated imports completed without replacing existing songs, translations or favorites', async () => {
+    const original = (await getTracks())[0];
+    await patchTrack(original.id, { favorite: true, title: '保留已有标题', lyrics: [{ time: 0, text: 'Existing', translation: '保留人工译文' }] });
+    const before = (await getTracks()).find((track) => track.id === original.id)!;
+    const files = [new File([before.audio], 'renamed.wav')];
+    const task = await createImportTask(files);
+    await runImportTask(task, files, new AbortController().signal, () => {});
+    expect(task.status).toBe('completed');
+    expect(task.completed).toHaveLength(1);
+    const after = await getTracks();
+    expect(after).toHaveLength(3);
+    const saved = after.find((track) => track.id === original.id)!;
+    expect(saved.title).toBe(before.title);
+    expect(saved.lyrics).toEqual(before.lyrics);
+    expect(saved.favorite).toBe(true);
+    expect(saved.addedAt).toBe(before.addedAt);
   });
   it('uses only the current product name in exported instructions while retaining the compatible file format', async () => {
     const tracks = await getTracks();

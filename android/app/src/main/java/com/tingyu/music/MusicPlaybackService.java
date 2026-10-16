@@ -25,6 +25,7 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.io.FileInputStream;
 import java.io.ByteArrayOutputStream;
+import java.util.LinkedHashSet;
 import androidx.core.content.ContextCompat;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -49,6 +50,8 @@ public class MusicPlaybackService extends Service {
     private long deadline = 0;
     private boolean finishTrack = false;
     private String error = "";
+    private final LinkedHashSet<String> cloudPlayed = new LinkedHashSet<>();
+    private void saveCloudPlayed() { getSharedPreferences("cloud-played", MODE_PRIVATE).edit().putString("ids", new JSONArray(cloudPlayed).toString()).apply(); }
     private final BroadcastReceiver noisyReceiver = new BroadcastReceiver() { @Override public void onReceive(Context context, Intent intent) { pause(true); } };
     private final AudioManager.OnAudioFocusChangeListener focusListener = change -> {
         if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) pause(true);
@@ -71,6 +74,7 @@ public class MusicPlaybackService extends Service {
             state.put("duration", prepared && player != null ? player.getDuration() / 1000d : track().optDouble("duration", 0));
             state.put("mode", mode); state.put("volume", volume); state.put("error", error);
             state.put("deadline", deadline); state.put("finishTrack", finishTrack);
+            state.put("cloudPlayed", new JSONArray(cloudPlayed));
         } catch (Exception ignored) {}
         return state;
     }
@@ -78,6 +82,7 @@ public class MusicPlaybackService extends Service {
     @Override
     public void onCreate() {
         super.onCreate(); instance = this; audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+        try { JSONArray ids = new JSONArray(getSharedPreferences("cloud-played", MODE_PRIVATE).getString("ids", "[]")); for (int position = 0; position < ids.length(); position++) { String id = ids.getString(position); if (id.matches("[a-f0-9]{64}") && cloudPlayed.size() < 5000) cloudPlayed.add(id); } } catch (Exception ignored) {}
         if (Build.VERSION.SDK_INT >= 26) {
             ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(new NotificationChannel("music-playback", "音乐播放", NotificationManager.IMPORTANCE_LOW));
             focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN).setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()).setOnAudioFocusChangeListener(focusListener).build();
@@ -155,8 +160,11 @@ public class MusicPlaybackService extends Service {
             String id = track().getString("id"); if (!id.matches("[a-f0-9]{64}")) throw new Exception("无效歌曲");
             player = new MediaPlayer(); player.setWakeMode(this, PowerManager.PARTIAL_WAKE_LOCK);
             player.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build());
-            player.setDataSource(new File(getFilesDir(), "playback-audio/" + id + ".audio").getAbsolutePath());
-            player.setOnPreparedListener(media -> { if (media != player) return; prepared = true; seek((long) (position * 1000)); if (wanted) play(); else refresh(); });
+            File cached = new File(getFilesDir(), "playback-audio/" + id + ".audio");
+            boolean remote = !cached.isFile() && track().has("sourceUrl");
+            if (remote) player.setDataSource(CloudAudioSource.validate(id, track().getString("sourceUrl")));
+            else player.setDataSource(cached.getAbsolutePath());
+            player.setOnPreparedListener(media -> { if (media != player) return; prepared = true; if (remote && cloudPlayed.size() < 5000) { cloudPlayed.add(id); saveCloudPlayed(); } seek((long) (position * 1000)); if (wanted) play(); else refresh(); });
             player.setOnCompletionListener(media -> { if (!checkSleep(true)) advance(1, true); });
             player.setOnErrorListener((media, what, extra) -> { error = "此音频无法解码，请尝试 MP3 / WAV 或检查源文件"; wanted = false; prepared = false; refresh(); return true; });
             session.setMetadata(new MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, track().optString("title")).putString(MediaMetadata.METADATA_KEY_ARTIST, track().optString("artist")).putString(MediaMetadata.METADATA_KEY_ALBUM, track().optString("album")).putLong(MediaMetadata.METADATA_KEY_DURATION, (long) (track().optDouble("duration") * 1000)).build());
@@ -193,6 +201,7 @@ public class MusicPlaybackService extends Service {
             else if ("volume".equals(action)) { volume = (float) Math.max(0, Math.min(1, intent.getDoubleExtra("value", 0.7))); applyVolume(); }
             else if ("mode".equals(action)) { String value = intent.getStringExtra("text"); if ("list".equals(value) || "shuffle".equals(value) || "one".equals(value)) mode = value; }
             else if ("fade".equals(action)) fade = (int) Math.max(0, Math.min(2000, intent.getDoubleExtra("value", 500)));
+            else if ("cached".equals(action)) { if (cloudPlayed.remove(intent.getStringExtra("text"))) saveCloudPlayed(); }
             else if ("sleep".equals(action)) { deadline = (long) intent.getDoubleExtra("value", 0); finishTrack = "finish-track".equals(intent.getStringExtra("text")); checkSleep(false); }
             else if ("stop".equals(action)) { pause(true); queue = new JSONArray(); refresh(); stopSelf(); }
             refresh();
