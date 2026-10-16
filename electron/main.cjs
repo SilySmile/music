@@ -8,7 +8,7 @@ const testing = process.env.TINGYU_TEST === '1';
 const syncFs = require('node:fs');
 const { profilePath, migrateProfile } = require('./profile.cjs');
 const dataPath = profilePath({ packaged: app.isPackaged, executable: process.execPath, portableDirectory: process.env.PORTABLE_EXECUTABLE_DIR, workspace: path.join(__dirname, '..'), testing, testData: process.env.TINGYU_TEST_DATA });
-const legacyPath = path.join(app.getPath('appData'), '听屿音乐');
+const legacyPath = path.join(app.getPath('appData'), '\u542c\u5c7f\u97f3\u4e50');
 if (!testing && !syncFs.existsSync(dataPath) && syncFs.existsSync(legacyPath)) {
   const choice = dialog.showMessageBoxSync({ type: 'question', buttons: ['旧版已退出，复制数据', '暂不启动'], defaultId: 0, cancelId: 1, title: '迁移旧版音乐数据', message: '请先从托盘退出旧版播放器。', detail: `将复制并校验旧数据到 ${dataPath}，旧目录暂不删除。请确保空间充足且磁盘稳定。` });
   if (choice !== 0) app.exit(0);

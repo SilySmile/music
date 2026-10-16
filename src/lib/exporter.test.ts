@@ -6,7 +6,7 @@ import { importFiles } from './importer';
 
 describe('portable music archive', () => {
   it('round trips original audio, metadata, favorites, artwork and sparse bilingual lyrics', async () => {
-    const demo = await fs.readFile('public/demo/听屿示例.zip');
+    const demo = await fs.readFile('public/demo/弦栖霁示例.zip');
     const imported = await importFiles([new File([demo], 'demo.zip')], () => {});
     const original = imported.tracks[0];
     original.favorite = true;
@@ -31,7 +31,7 @@ describe('portable music archive', () => {
     expect(manifest).not.toContain('tingyu-ai-config');
   });
   it('exports timed lyrics and translations as standard matching files', async () => {
-    const demo = await fs.readFile('public/demo/听屿示例.zip');
+    const demo = await fs.readFile('public/demo/弦栖霁示例.zip');
     const { tracks } = await importFiles([new File([demo], 'demo.zip')], () => {});
     const bytes = await createMusicArchive(tracks, () => {});
     const zip = await JSZip.loadAsync(bytes);
@@ -44,7 +44,7 @@ describe('portable music archive', () => {
     expect(safeFilename('CON')).toBe('歌曲');
     await expect(createMusicArchive([], () => {})).rejects.toThrow('选择');
     const controller = new AbortController(); controller.abort();
-    const demo = await fs.readFile('public/demo/听屿示例.zip');
+    const demo = await fs.readFile('public/demo/弦栖霁示例.zip');
     const { tracks } = await importFiles([new File([demo], 'demo.zip')], () => {});
     await expect(createMusicArchive(tracks, () => {}, controller.signal)).rejects.toThrow();
   });

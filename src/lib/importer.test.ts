@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 
 describe('music archive import', () => {
   it('imports an audio file on its own without requiring a ZIP or lyrics', async () => {
-    const zip = await JSZip.loadAsync(await fs.readFile('public/demo/听屿示例.zip'));
+    const zip = await JSZip.loadAsync(await fs.readFile('public/demo/弦栖霁示例.zip'));
     const entry = Object.values(zip.files).find((file) => /\.wav$/i.test(file.name))!;
     const bytes = await entry.async('uint8array');
     const result = await importFiles([new File([Uint8Array.from(bytes)], 'Demo - Alone.wav')], () => {});
@@ -13,7 +13,7 @@ describe('music archive import', () => {
     expect(result.tracks[0].duration).toBe(36); expect(result.tracks[0].audio.size).toBe(bytes.length);
   });
   it('imports real demo audio, nested cover art, and timestamp-matched Chinese lyrics', async () => {
-    const bytes = await fs.readFile('public/demo/听屿示例.zip');
+    const bytes = await fs.readFile('public/demo/弦栖霁示例.zip');
     const result = await importFiles([new File([bytes], 'example.zip')], () => {});
     expect(result.tracks).toHaveLength(3);
     expect(result.warnings).toHaveLength(0);
@@ -34,7 +34,7 @@ describe('music archive import', () => {
     await expect(importFiles([new File([Uint8Array.from(bytes)], 'empty.zip')], () => {})).rejects.toThrow('没有找到歌曲');
   });
   it('skips completed songs after pause and rereads only unfinished songs', async () => {
-    const bytes = await fs.readFile('public/demo/听屿示例.zip');
+    const bytes = await fs.readFile('public/demo/弦栖霁示例.zip');
     const files = [new File([bytes], 'resume.zip', { lastModified: 1234 })];
     const completed = new Set<string>();
     const controller = new AbortController();

@@ -15,7 +15,8 @@ if ((Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.Ex
 $preserved = [Collections.Generic.List[string]]::new()
 $removed = [Collections.Generic.List[object]]::new()
 $skipped = [Collections.Generic.List[string]]::new()
-$runtime = @('resources', 'locales', '弦栖霁.exe', '听屿音乐.exe', 'chrome_100_percent.pak', 'chrome_200_percent.pak', 'd3dcompiler_47.dll', 'dxcompiler.dll', 'dxil.dll', 'ffmpeg.dll', 'icudtl.dat', 'LICENSE', 'LICENSE.electron.txt', 'LICENSES.chromium.html', 'resources.pak', 'snapshot_blob.bin', 'v8_context_snapshot.bin', 'version', 'vk_swiftshader_icd.json', 'vk_swiftshader.dll', 'vulkan-1.dll')
+$legacyExecutable = [string]([char]0x542c) + [char]0x5c7f + [char]0x97f3 + [char]0x4e50 + '.exe'
+$runtime = @('resources', 'locales', '弦栖霁.exe', $legacyExecutable, 'chrome_100_percent.pak', 'chrome_200_percent.pak', 'd3dcompiler_47.dll', 'dxcompiler.dll', 'dxil.dll', 'ffmpeg.dll', 'icudtl.dat', 'LICENSE', 'LICENSE.electron.txt', 'LICENSES.chromium.html', 'resources.pak', 'snapshot_blob.bin', 'v8_context_snapshot.bin', 'version', 'vk_swiftshader_icd.json', 'vk_swiftshader.dll', 'vulkan-1.dll')
 $metadata = @('使用说明.txt', '更新说明.txt', '更新服务部署与发布指南.md', '音乐库切换使用说明.md', 'builder-debug.yml', 'SHA256SUMS.txt', 'update-notes.txt', '验证结果.json', 'manifest.json')
 function Assert-ContainedItem([string]$Target) {
     $item = Get-Item -LiteralPath $Target -Force

@@ -14,7 +14,7 @@ async function main() {
     application = await _electron.launch({ executablePath: process.env.TINGYU_EXECUTABLE || path.join(root, 'node_modules/electron/dist/electron.exe'), args: process.env.TINGYU_EXECUTABLE ? [] : [root], env, cwd: root });
     const page = await application.firstWindow();
     await page.waitForSelector('.empty-state');
-    const zip = await JSZip.loadAsync(await fs.readFile(path.join(root, 'public/demo/听屿示例.zip')));
+    const zip = await JSZip.loadAsync(await fs.readFile(path.join(root, 'public/demo/弦栖霁示例.zip')));
     const audioEntry = Object.values(zip.files).find((entry) => /\.wav$/i.test(entry.name));
     const audio = await audioEntry.async('nodebuffer');
     await page.getByRole('button', { name: '导入音乐', exact: true }).first().click();

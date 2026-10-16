@@ -61,7 +61,7 @@ export async function createExportTask(tracks: Track[]): Promise<ExportTask> {
     const { audio: _audio, cover: _cover, ...metadata } = track;
     addText(`${directory}/tingyu-library.json`, JSON.stringify({ format: 'xianqiji-library', version: 1, tracks: [metadata] }));
   }
-  addText('导入说明.txt', '在弦栖霁中导入整个 ZIP 即可恢复歌曲、封面、歌词、译文与收藏。兼容原听屿音乐包；本包不含 API Key。');
+  addText('导入说明.txt', '在弦栖霁中导入整个 ZIP 即可恢复歌曲、封面、歌词、译文与收藏。兼容旧版音乐包；本包不含 API Key。');
   const date = new Date();
   const stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
   const task: ExportTask = { id: crypto.randomUUID(), kind: 'export', label: `${tracks.length} 首歌曲`, filename: `弦栖霁-${stamp}-${tracks.length}首.zip`, entries, checkpoint: initialZipCheckpoint(), status: 'paused', updatedAt: Date.now() };
