@@ -3,12 +3,25 @@ import { createRequire } from 'node:module';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
 import { parseLyrics } from './lyrics';
-import { enhancedLyricText, extrapolateLyricPosition, timedWords, wordProgress } from './lyricTiming';
+import { enhancedLyricText, extrapolateLyricPosition, singingEnd, timedWords, wordProgress } from './lyricTiming';
 import { serializeLyrics } from './exporter';
 import TimedLyricText from '../components/TimedLyricText';
 const native = createRequire(import.meta.url)('../../electron/lyric-timing.cjs');
 
 describe('real word timing', () => {
+  it('preserves a plain phrase end independently of the next start without fabricating word timing', () => {
+    const line = { time: 1.234, endTime: 4.567, text: '唱完了' };
+    expect(parseLyrics(serializeLyrics([line]))).toEqual([line]);
+    expect(timedWords(parseLyrics(serializeLyrics([line]))[0])).toBeUndefined();
+    expect(native.enhancedText(line)).toBe(enhancedLyricText(line));
+    expect(singingEnd(line, 7)).toBe(4.567);
+    expect(singingEnd({ ...line, endTime: NaN }, 7)).toBe(7);
+    expect(singingEnd({ ...line, endTime: 8 }, 7)).toBe(7);
+    const markup = renderToStaticMarkup(createElement(TimedLyricText, { text: line.text, position: 6, active: true, lineStart: line.time, lineEnd: singingEnd(line, 7) }));
+    expect(markup).toContain('inset(0 0% 0 0)');
+    expect(parseLyrics('[offset:-500]\n[00:02][01:02][x-end:00:04]唱完了').map((line) => [line.time, line.endTime])).toEqual([[1.5, 3.5], [61.5, 63.5]]);
+    expect(parseLyrics('[00:02][x-end:00:01]唱完了')[0].endTime).toBeUndefined();
+  });
   it('reads uneven syllables, a long hold and an explicit last-word end', () => {
     const [line] = parseLyrics('[00:01.000]<00:01.000>快<00:01.200>唱<00:01.400>啊<00:05.000>');
     expect(line.text).toBe('快唱啊');

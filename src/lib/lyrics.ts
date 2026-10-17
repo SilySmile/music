@@ -37,12 +37,16 @@ export function parseLyrics(source: string): LyricLine[] {
       continue;
     }
     const timestamps = [...rawLine.matchAll(/\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g)];
+    const endTag = rawLine.match(/\[x-end:(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/i);
     const firstTime = timestamps[0] ? seconds(timestamps[0][1], timestamps[0][2], timestamps[0][3]) : 0;
     const { text, words } = enhancedWords(rawLine.replace(/\[[^\]]*\]/g, ''), Math.max(0, firstTime + offset), offset);
     if (!text) continue;
     for (const timestamp of timestamps) {
+      const time = Math.max(0, seconds(timestamp[1], timestamp[2], timestamp[3]) + offset);
+      const endTime = endTag ? seconds(endTag[1], endTag[2], endTag[3]) + offset + seconds(timestamp[1], timestamp[2], timestamp[3]) - firstTime : NaN;
       entries.push({
-        time: Math.max(0, seconds(timestamp[1], timestamp[2], timestamp[3]) + offset),
+        time,
+        ...(Number.isFinite(endTime) && endTime > time ? { endTime } : {}),
         text,
         ...(words ? { words: words.map((word) => { const delta = seconds(timestamp[1], timestamp[2], timestamp[3]) - firstTime; return { ...word, time: Math.max(0, word.time + delta), ...(word.endTime !== undefined ? { endTime: Math.max(0, word.endTime + delta) } : {}) }; }) } : {}),
       });

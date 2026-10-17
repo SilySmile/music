@@ -30,7 +30,7 @@ function lyricsText(lines, translated) {
     const text = translated ? line.translation || '' : enhancedText(line);
     if (!text) return timed ? '' : ' ';
     if (line.time < 0) return text;
-    if (timedWords(line)) return `[${timestamp(line.time)}]${text}`;
+    if (timedWords(line) || line.endTime !== undefined) return `[${timestamp(line.time)}]${text}`;
     const value = Math.round(line.time * 100);
     return `[${String(Math.floor(value / 6000)).padStart(2, '0')}:${String(Math.floor(value / 100 % 60)).padStart(2, '0')}.${String(value % 100).padStart(2, '0')}]${text}`;
   }).filter((line) => line !== '').join('\n');

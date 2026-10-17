@@ -2,7 +2,7 @@ import { BlobReader, BlobWriter, ZipReader, configure } from '@zip.js/zip.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { parseBlob } from 'music-metadata';
 import type { LyricLine, Track } from '../types';
-import { timedWords, wordTimingMetadata } from './lyricTiming';
+import { lineEndMetadata, timedWords, wordTimingMetadata } from './lyricTiming';
 import { decodeText, mergeTranslation, parseLyrics } from './lyrics';
 
 type Entry = { name: string; size: number; id: string; group: string; read: (signal?: AbortSignal) => Promise<Blob> };
@@ -61,7 +61,7 @@ export async function importFiles(files: File[], onProgress: (message: string) =
         const audit = item.translationAudit;
         if (audit && typeof audit.song === 'string' && typeof audit.artist === 'string' && typeof audit.model === 'string' && Number.isFinite(audit.verifiedAt) && Number.isSafeInteger(audit.checkedLines) && audit.checkedLines >= 0) metadata.translationAudit = { song: audit.song.slice(0, 500), artist: audit.artist.slice(0, 500), model: audit.model.slice(0, 500), verifiedAt: audit.verifiedAt, checkedLines: audit.checkedLines };
         if (Array.isArray(item.lyrics) && item.lyrics.length <= 5000 && item.lyrics.every((line: { time?: unknown; text?: unknown; translation?: unknown }) => typeof line.time === 'number' && Number.isFinite(line.time) && line.time >= -1 && typeof line.text === 'string' && line.text.length <= 6000 && (line.translation === undefined || typeof line.translation === 'string' && line.translation.length <= 6000))) {
-          metadata.lyrics = item.lyrics.map((line: LyricLine) => ({ time: line.time, text: line.text, translation: line.translation, ...(timedWords(line) ? { words: timedWords(line)!.map((word) => ({ ...word })), ...wordTimingMetadata(line) } : {}) }));
+          metadata.lyrics = item.lyrics.map((line: LyricLine) => ({ time: line.time, ...lineEndMetadata(line), text: line.text, translation: line.translation, ...(timedWords(line) ? { words: timedWords(line)!.map((word) => ({ ...word })), ...wordTimingMetadata(line) } : {}) }));
         }
         restoredMetadata.set(item.id, metadata);
       }

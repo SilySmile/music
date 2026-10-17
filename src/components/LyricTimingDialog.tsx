@@ -6,7 +6,7 @@ import { generateWordAlignment } from '../lib/audioAI';
 import { needsWordAlignment, vocalLine } from '../lib/audioAlignment';
 import { timedWords } from '../lib/lyricTiming';
 import { sourceLibraryScope } from '../lib/storage';
-import { applyLineTimeDraft, createLineTimeDraft, lineTimeEnd, timingFingerprint, type LineTimeDraft } from '../lib/lyricTimingEditor';
+import { applyLineTimeDraft, changeSingingEnd, createLineTimeDraft, lineTimeEnd, timingFingerprint, type LineTimeDraft } from '../lib/lyricTimingEditor';
 import TimedLyricText from './TimedLyricText';
 
 type Props = { tracks: Track[]; currentId: string; position: number; playing: boolean; config: AIConfig; blocked: boolean; onBusy(value: boolean): void; onSeek(time: number): void; onTogglePlay(): void; onPlayTrack(id: string): void; onSave(id: string, expected: string, lyrics: LyricLine[]): Promise<void>; onClose(): void };
@@ -52,7 +52,7 @@ function SongTimingEditor(props: Props & { track: Track; trackId: string; onSele
     // A changed line anchor also bounds the preceding phrase.
     for (let index = 0; index < next.length; index++) {
       const words = timedWords(next[index]); const end = lineTimeEnd({ ...track, lyrics: next }, index);
-      if (words?.some((word) => (word.endTime ?? word.time) > end)) throw new Error(`第 ${index + 1} 句与下一句时间重叠，请调整后保存。`);
+      if ((next[index].endTime ?? 0) > end || words?.some((word) => (word.endTime ?? word.time) > Math.min(end, next[index].endTime ?? end))) throw new Error(`第 ${index + 1} 句与下一句时间重叠或超过唱完时间，请调整后保存。`);
     }
     return next;
   }
@@ -73,8 +73,10 @@ function SongTimingEditor(props: Props & { track: Track; trackId: string; onSele
       await ensureCurrent();
       const next = collect(false, wholeSong ? undefined : lineIndex);
       const start = draft.start.trim() ? Number(draft.start) : NaN;
+      const endTime = draft.end.trim() ? Number(draft.end) : NaN;
       if (!wholeSong && (!Number.isFinite(start) || start < (next.slice(0, lineIndex).filter((line) => line.time >= 0).at(-1)?.time ?? 0) || start >= lineTimeEnd({ ...track, lyrics: next }, lineIndex))) throw new Error('请先设置有效的本句开始时间，再生成逐字时间。');
-      const input = { ...track, lyrics: next.map((line, index) => !wholeSong && index === lineIndex ? { ...line, time: start, words: undefined, wordTiming: undefined, timingNote: undefined } : line) };
+      if (!wholeSong && (!Number.isFinite(endTime) || endTime <= start || endTime > lineTimeEnd({ ...track, lyrics: next }, lineIndex))) throw new Error('请先设置有效的本句唱完时间，间奏不计入演唱时间。');
+      const input = { ...track, lyrics: next.map((line, index) => !wholeSong && index === lineIndex ? { ...line, time: start, endTime, words: undefined, wordTiming: undefined, timingNote: undefined } : line) };
       if (wholeSong ? !needsWordAlignment(input) : !vocalLine(input.lyrics[lineIndex])) { setMessage('当前范围已有逐字时间或没有演唱文本，已跳过，未调用 AI。'); return; }
       const options = { stage: (message: string) => { if (alive.current) setMessage(message); } };
       const result = config.alignmentMode === 'audio' ? await generateWordAlignment(input, config, abort.signal, options) : await generateTextAlignment(input, { ...config, singingHint: hint }, abort.signal, { ...options, lineIds: wholeSong ? undefined : [lineIndex] });
@@ -93,8 +95,11 @@ function SongTimingEditor(props: Props & { track: Track; trackId: string; onSele
     {!lyrics.length ? <p>这首歌尚无歌词，请先单独导入歌词或联网补全。</p> : <>
       <label className="timing-song-select">句子<select aria-label="歌词句子" value={lineIndex} disabled={running || saving} onChange={(event) => setLineIndex(Number(event.target.value))}>{lyrics.map((line, index) => <option key={index} value={index}>{index + 1}. {line.text || '（空行）'}</option>)}</select></label>
       {line && <>
-        <div className="timing-line-clock"><label>本句开始（秒）<input aria-label="本句开始时间" type="number" min="0" step="0.001" disabled={disabled} value={draft.start} onChange={(event) => change({ ...draft, start: event.target.value })} /></label><span>本句结束：{lineTimeEnd(working, lineIndex).toFixed(3)} 秒</span></div>
-        <div className="timing-preview"><TimedLyricText text={line.text} words={preview?.words} active={canSample} position={props.position} lineStart={preview?.time ?? line.time} lineEnd={lineTimeEnd(working, lineIndex)} /></div>
+        <div className="timing-line-clock"><label>本句开始（秒）<input aria-label="本句开始时间" type="number" min="0" step="0.001" disabled={disabled} value={draft.start} onChange={(event) => change({ ...draft, start: event.target.value })} /></label><label>本句唱完（秒）<input aria-label="本句唱完时间" type="number" min="0" step="0.001" disabled={disabled} value={draft.end} onChange={(event) => change(changeSingingEnd(draft, event.target.value))} /></label><button className="button outline" disabled={disabled || !canSample} onClick={() => change(changeSingingEnd(draft, props.position.toFixed(3)))}>取当前为唱完</button><span>{lineIndex < lyrics.length - 1 ? '下一句开始' : '歌曲结尾'}：{lineTimeEnd(working, lineIndex).toFixed(3)} 秒</span></div>
+        <p className="field-help">唱完到下一句之间可留间奏。缩短唱完时间时，超出范围的逐字草稿会按比例收紧；也可逐字微调。</p>
+        {Number(draft.end) < lineTimeEnd(working, lineIndex) && <p className="field-help">本句唱完后预留 {(lineTimeEnd(working, lineIndex) - Number(draft.end)).toFixed(3)} 秒间奏或停顿，期间高亮停在唱完的位置。</p>}
+        {line.wordTiming === 'estimated' && line.timingNote && <p className="field-help">AI 估算：{line.timingNote}</p>}
+        <div className="timing-preview"><TimedLyricText text={line.text} words={preview?.words} active={canSample} position={props.position} lineStart={preview?.time ?? line.time} lineEnd={preview?.endTime ?? Number(draft.end)} /></div>
         <div className="timing-playback"><span>{canSample ? `当前播放时间：${props.position.toFixed(3)} 秒` : '播放这首歌后，可边听边取当前时间。'}</span><button className="button outline" onClick={() => canSample ? props.onTogglePlay() : props.onPlayTrack(track.id)}>{canSample && props.playing ? <Pause size={14} /> : <Play size={14} />}{canSample ? props.playing ? '暂停当前歌曲' : '播放当前歌曲' : '播放所选歌曲'}</button></div>
         {!timedWords(line) && <p className="field-help">当前显示按原句时间均分的可编辑草稿；保存前仍沿用原歌词。</p>}
         <div className="word-time-list"><div className="word-time-heading"><span>字 / 词</span><span>开始（秒）</span><span>结束（秒）</span><span>校准</span></div>{draft.words.map((word, index) => <div className="word-time-row" key={index} data-word-index={index}><strong>{word.text}</strong><input aria-label={`第${index + 1}字开始时间`} type="number" min="0" step="0.001" disabled={disabled} value={word.start} onChange={(event) => editWord(index, 'start', event.target.value)} /><input aria-label={`第${index + 1}字结束时间`} type="number" min="0" step="0.001" disabled={disabled} value={word.end} onChange={(event) => editWord(index, 'end', event.target.value)} /><div><button title="用当前播放时间作为开始" aria-label={`第${index + 1}字取当前开始时间`} disabled={disabled || !canSample} onClick={() => editWord(index, 'start', props.position.toFixed(3))}><Clock3 size={13} />起</button><button title="用当前播放时间作为结束" aria-label={`第${index + 1}字取当前结束时间`} disabled={disabled || !canSample} onClick={() => editWord(index, 'end', props.position.toFixed(3))}><Clock3 size={13} />止</button><button title="跳到这个字的开始" aria-label={`定位第${index + 1}字`} disabled={!canSample || !Number.isFinite(Number(word.start))} onClick={() => props.onSeek(Number(word.start))}><Play size={13} /></button></div></div>)}</div>

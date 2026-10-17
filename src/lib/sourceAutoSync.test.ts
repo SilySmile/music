@@ -32,6 +32,16 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 describe('automatic private source upload', () => {
+  it('tracks sung end edits, supplements a missing end, and protects conflicting instrumental gaps', async () => {
+    const track = song();
+    const ended = { ...track, lyrics: [{ ...track.lyrics[0], endTime: .5 }] };
+    expect(sourceSyncTrigger([ended])).not.toBe(sourceSyncTrigger([track]));
+    expect(planSourceUpload(track, undefined, record(ended)).track.lyrics[0].endTime).toBe(.5);
+    expect(planSourceUpload(ended, undefined, record({ ...ended, lyrics: [{ ...ended.lyrics[0], endTime: .8 }] })).action).toBe('conflict');
+    const source = fixture(); await source.run([track]);
+    expect(await source.run([ended])).toMatchObject({ uploaded: 1 });
+    expect(source.remote.get(track.id)?.metadata.lyrics[0].endTime).toBe(.5);
+  });
   it('uploads all current songs once, verifies them online and skips identical content on repeat', async () => {
     const source = fixture(); const tracks = [song('first'), song('second')];
     expect(await source.run(tracks)).toMatchObject({ uploaded: 2, checked: 2, errors: 0, conflicts: 0 });

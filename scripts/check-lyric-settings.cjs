@@ -20,7 +20,7 @@ async function main() {
           globalThis.manualTimingCalls.push({ type: 'text', lines: data.lines.map((line) => line.id) });
           if (globalThis.delayTiming) await new Promise((resolve) => setTimeout(resolve, 1000));
           if (globalThis.failTiming) return new Response('{}', { status: 503 });
-          const lines = data.lines.map((line) => ({ id: line.id, source: line.source, singing: '模拟唱法：停顿后拖音，未经音频验证', tailPause: .2, words: line.units.map((text, i) => ({ text, duration: i === line.units.length - 1 ? 3 : 1, pauseBefore: i ? .2 : 0 })) }));
+          const lines = data.lines.map((line) => ({ id: line.id, source: line.source, singing: '模拟唱法：唱完后留间奏，未经音频验证', singingEnd: Math.min(line.end, line.start + 3), instrumentalAfter: Math.min(line.end, line.start + 3) < line.nextStart, words: line.units.map((text, i) => ({ text, duration: i === line.units.length - 1 ? 3 : 1, pauseBefore: i ? .2 : 0 })) }));
           return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ song: data.song, lines }) } }] }), { status: 200 });
         }
         if (String(url) === 'https://manual.example.test/v1/audio/transcriptions') {
@@ -76,6 +76,15 @@ async function main() {
     await dialog.getByText(/第 2 个字词时间无效/).waitFor();
     assert.deepEqual((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id).metadata.lyrics, saved.metadata.lyrics);
     await dialog.getByRole('button', { name: '还原未保存修改', exact: true }).click();
+    await dialog.getByLabel('本句唱完时间', { exact: true }).fill('4.000');
+    assert.equal(await dialog.getByLabel('第2字结束时间', { exact: true }).inputValue(), '4.000');
+    await dialog.getByText('本句唱完后预留 3.000 秒间奏或停顿，期间高亮停在唱完的位置。', { exact: true }).waitFor();
+    await dialog.getByRole('button', { name: '保存歌词时间', exact: true }).click();
+    await dialog.getByText('逐字时间已保存，主窗口和桌面歌词已更新。', { exact: true }).waitFor();
+    saved = (await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id);
+    assert.equal(saved.metadata.lyrics[0].endTime, 4);
+    assert.equal(saved.metadata.lyrics[0].words.at(-1).endTime, 4);
+    await page.waitForFunction(async () => (await window.tingyuDesktop.getSnapshot()).lineEnd === 4);
     await dialog.getByRole('button', { name: 'AI 生成本句', exact: true }).click();
     await dialog.getByText('AI 生成完成，可继续调整；点击“保存歌词时间”后生效。', { exact: true }).waitFor();
     assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), 1);
@@ -83,6 +92,8 @@ async function main() {
     await dialog.getByRole('button', { name: '保存歌词时间', exact: true }).click();
     await dialog.getByText('逐字时间已保存，主窗口和桌面歌词已更新。', { exact: true }).waitFor();
     saved = (await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id);
+    assert.equal(saved.metadata.lyrics[0].endTime, 4, 'manual AI must exclude the three-second instrumental break');
+    assert.equal(saved.metadata.lyrics[0].words.at(-1).endTime, 4);
     assert.equal(saved.metadata.lyrics[1].words, undefined, 'generate this line must preserve other missing lines');
     if (textMode) assert.equal(saved.metadata.lyrics[0].wordTiming, 'estimated');
     await dialog.getByRole('button', { name: 'AI 生成整首缺失时间', exact: true }).click();
@@ -125,7 +136,8 @@ async function main() {
     assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), callsBeforeReload, 'restart never retries a manual failed/cancelled job');
     const directory = path.join(profile, '音乐库', '歌曲', id);
     const lrc = (await fs.readdir(directory)).find((name) => name.endsWith('.lrc') && !name.endsWith('.zh.lrc'));
-    assert.match(await fs.readFile(path.join(directory, lrc), 'utf8'), /<00:/);
+    const lyricDocument = await fs.readFile(path.join(directory, lrc), 'utf8');
+    assert.match(lyricDocument, /<00:/); assert.match(lyricDocument, /\[x-end:00:04\.000\]/);
     assert.deepEqual(errors, []);
     console.log(`PASS manual lyric settings (${textMode ? 'chat' : 'audio'}): legacy auto flag disabled, zero AI on startup/config save/import/restart, per-character editing, overlap refusal without overwrite, manual AI this-line and whole-song drafts, explicit save and Enhanced LRC/Chinese persistence, provider failure without automatic retry; isolated fixtures only`);
   } finally { if (app) await app.close(); }

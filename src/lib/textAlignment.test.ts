@@ -11,6 +11,28 @@ const config: AIConfig = { url: 'https://api.deepseek.com', model: 'deepseek-fla
 const answer = (targets = textAlignmentTargets(track)) => ({ song, lines: targets.map((target) => ({ id: target.id, source: target.source, singing: '可能在逗号处换气、末字拖音，未经录音验证', words: target.units.map((text, index) => ({ text, start: target.start + index * .5, end: target.start + index * .5 + .3 })) })) });
 
 describe('chat-based singing time estimates', () => {
+  it('judges instrumental gaps before allocating words and keeps the gap through export and reimport', async () => {
+    const request = vi.fn(async (input: AIRequest) => {
+      const messages = input.body.messages as { content: string }[];
+      expect(messages[0].content).toContain('纯音乐间奏');
+      const data = JSON.parse(messages[1].content);
+      expect(data.lines[0]).toMatchObject({ start: 1, end: 7, nextStart: 7 });
+      return { choices: [{ message: { content: JSON.stringify({ song, lines: data.lines.map((target: ReturnType<typeof textAlignmentTargets>[number]) => ({ id: target.id, source: target.source, singing: '末字唱完后可能有间奏，需试听确认', singingEnd: target.start + 3, instrumentalAfter: true, tailPause: 99, words: target.units.map((text) => ({ text, duration: 1, pauseBefore: 0 })) })) }) } }] };
+    });
+    const result = await generateTextAlignment(track, config, new AbortController().signal, { request });
+    expect(result.lyrics[0].endTime).toBe(4);
+    expect(result.lyrics[0].words!.at(-1)!.endTime).toBe(4);
+    expect(result.lyrics[0].timingNote).toContain('3.000 秒留作间奏');
+    expect(parseLyrics(serializeLyrics(result.lyrics))[0].endTime).toBe(4);
+    expect(textAlignmentTargets({ ...track, lyrics: [{ time: 1, endTime: 4, text: '你好' }, track.lyrics[1]] })[0]).toMatchObject({ end: 4, nextStart: 7 });
+    const targets = textAlignmentTargets(track);
+    for (const singingEnd of [0, 8, 'NaN', null]) {
+      const value = answer(); Object.assign(value.lines[0], { singingEnd, instrumentalAfter: true });
+      expect(() => readEstimatedTimings(JSON.stringify(value), targets, song)).toThrow('唱完时间');
+    }
+    const invalid = answer(); Object.assign(invalid.lines[0], { instrumentalAfter: true });
+    expect(() => readEstimatedTimings(JSON.stringify(invalid), targets, song)).toThrow('唱完时间');
+  });
   it('keeps every character and punctuation, splitting CJK characters and Western words', () => {
     expect(singingUnits('“你，好啊！ Stay here.”')).toEqual(['“你，', '好', '啊！ ', 'Stay ', 'here.”']);
     expect(singingUnits('Hi你好love你')).toEqual(['Hi', '你', '好', 'love', '你']);

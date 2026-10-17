@@ -1,9 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { applyLineTimeDraft, createLineTimeDraft, timingFingerprint } from './lyricTimingEditor';
+import { applyLineTimeDraft, changeSingingEnd, createLineTimeDraft, timingFingerprint } from './lyricTimingEditor';
 import { parseLyrics } from './lyrics';
 import { serializeLyrics } from './exporter';
 const track = { duration: 12, lyrics: [{ time: 1, text: '你，好啊', translation: 'Hello' }, { time: 7, text: '再见' }] };
 describe('manual lyric timing drafts', () => {
+  it('keeps a three-second instrumental gap and compresses only overflowing draft words', () => {
+    const initial = createLineTimeDraft(track, 0);
+    const draft = changeSingingEnd(initial, '4.000');
+    const line = applyLineTimeDraft(track, 0, draft);
+    expect(line.endTime).toBe(4);
+    expect(line.words!.at(-1)!.endTime).toBe(4);
+    expect(createLineTimeDraft({ ...track, lyrics: [line, track.lyrics[1]] }, 0).end).toBe('4.000');
+    expect(parseLyrics(serializeLyrics([line]))[0]).toEqual({ ...line, translation: undefined });
+    expect(changeSingingEnd(draft, '5.000').words).toEqual(draft.words);
+    expect(() => applyLineTimeDraft(track, 0, { ...draft, end: '8' })).toThrow('唱完时间');
+    expect(() => applyLineTimeDraft(track, 0, { ...initial, end: '4' })).toThrow('第');
+    expect(timingFingerprint([line])).not.toBe(timingFingerprint([{ ...line, endTime: 5 }]));
+  });
   it('prepares editable character times without changing the source and persists only an explicit application', () => {
     const draft = createLineTimeDraft(track, 0);
     expect(draft.words.map((word) => word.text)).toEqual(['你，', '好', '啊']);

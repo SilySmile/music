@@ -6,10 +6,21 @@ import { importFiles } from './importer';
 import { parseLyrics } from './lyrics';
 
 describe('portable music archive', () => {
+  it('round trips ordinary line ends without creating word timings or losing the instrumental gap', async () => {
+    const demo = await fs.readFile('public/demo/弦栖霁示例.zip');
+    const { tracks } = await importFiles([new File([demo], 'demo.zip')], () => {});
+    tracks[0].lyrics = [{ time: 1, endTime: 4, text: '你好' }, { time: 7, text: '再见' }];
+    const bytes = await createMusicArchive([tracks[0]], () => {});
+    const restored = await importFiles([new File([bytes], 'phrase-gap.zip')], () => {});
+    expect(restored.tracks[0].lyrics).toEqual(tracks[0].lyrics);
+    const zip = await JSZip.loadAsync(bytes);
+    const file = Object.keys(zip.files).find((name) => name.endsWith('.lrc'))!;
+    expect(parseLyrics(await zip.file(file)!.async('string'))).toEqual(tracks[0].lyrics);
+  });
   it.each([false, true])('retains word timing and pauses in metadata and standalone LRC (estimated=%s)', async (estimated) => {
     const demo = await fs.readFile('public/demo/弦栖霁示例.zip');
     const { tracks } = await importFiles([new File([demo], 'demo.zip')], () => {});
-    tracks[0].lyrics = parseLyrics('[1000,4000](1000,500,0)Snow (3000,2000,0)falls');
+    tracks[0].lyrics = parseLyrics('[1000,4000](1000,500,0)Snow (3000,2000,0)falls').map((line) => ({ ...line, endTime: 5 }));
     if (estimated) tracks[0].lyrics = tracks[0].lyrics.map((line) => ({ ...line, wordTiming: 'estimated' }));
     const bytes = await createMusicArchive([tracks[0]], () => {});
     const restored = await importFiles([new File([bytes], 'word-timing.zip')], () => {});

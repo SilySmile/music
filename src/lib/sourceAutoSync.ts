@@ -1,6 +1,6 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import type { Track } from '../types';
-import { timedWords, wordTimingMetadata } from './lyricTiming';
+import { lineEndMetadata, timedWords, wordTimingMetadata } from './lyricTiming';
 import { listSource, sourceRequest, uploadSourceTrack, type SourceConfig, type SourceInfo, type SourceRequester, type SourceTrack } from './onlineSource';
 
 export type SourceSyncIssue = { id: string; title: string; reason: string };
@@ -9,7 +9,7 @@ export const emptySourceSync: SourceSyncState = { enabled: false, running: false
 type Baseline = { local: string; remote: string; revision: number };
 type Verification = { id: string; revision: number; ok: boolean; media: { audio: boolean; cover?: boolean } };
 const digest = (value: string) => Array.from(sha256(new TextEncoder().encode(value)), (byte) => byte.toString(16).padStart(2, '0')).join('');
-const normalizedLyrics = (track: Pick<Track, 'lyrics'>) => track.lyrics.map((line) => ({ time: Math.round(line.time * 100), text: line.text.trim(), translation: line.translation?.trim() || '', ...(timedWords(line) ? { words: line.words, ...wordTimingMetadata(line) } : {}) }));
+const normalizedLyrics = (track: Pick<Track, 'lyrics'>) => track.lyrics.map((line) => ({ time: Math.round(line.time * 100), ...lineEndMetadata(line), text: line.text.trim(), translation: line.translation?.trim() || '', ...(timedWords(line) ? { words: line.words, ...wordTimingMetadata(line) } : {}) }));
 function semantic(track: Omit<Track, 'audio' | 'cover'>, cover?: string) {
   return { title: track.title.trim(), artist: track.artist.trim(), album: track.album.trim(), lyrics: normalizedLyrics(track), cover: cover || '' };
 }
@@ -47,7 +47,8 @@ export function planSourceUpload(local: Track, cover: string | undefined, remote
     if (localLines.length !== remoteLines.length || localLines.some((line, index) => line.time !== remoteLines[index].time || line.text !== remoteLines[index].text)) return conflict('两端原文歌词或时间轴不同，未自动覆盖。');
     if (localLines.some((line, index) => line.translation && remoteLines[index].translation && line.translation !== remoteLines[index].translation)) return conflict('两端已有不同中文译文，未自动覆盖。');
     if (localLines.some((line, index) => line.words && remoteLines[index].words && JSON.stringify(line.words) !== JSON.stringify(remoteLines[index].words))) return conflict('两端逐字时间轴不同，未自动覆盖。');
-    lyrics = local.lyrics.map((line, index) => ({ ...line, ...(!timedWords(line) && timedWords(remote.metadata.lyrics[index]) ? { words: remote.metadata.lyrics[index].words, ...wordTimingMetadata(remote.metadata.lyrics[index]) } : {}), translation: line.translation || remote.metadata.lyrics[index].translation }));
+    if (localLines.some((line, index) => line.endTime !== undefined && remoteLines[index].endTime !== undefined && line.endTime !== remoteLines[index].endTime)) return conflict('两端唱完时间不同，未自动覆盖。');
+    lyrics = local.lyrics.map((line, index) => ({ ...line, ...(lineEndMetadata(line).endTime === undefined ? lineEndMetadata(remote.metadata.lyrics[index]) : {}), ...(!timedWords(line) && timedWords(remote.metadata.lyrics[index]) ? { words: remote.metadata.lyrics[index].words, ...wordTimingMetadata(remote.metadata.lyrics[index]) } : {}), translation: line.translation || remote.metadata.lyrics[index].translation }));
   } else if (!lyrics.length) lyrics = remote.metadata.lyrics;
   const merged = { ...local, title: local.title || remote.metadata.title, artist: local.artist || remote.metadata.artist, album: local.album || remote.metadata.album, lyrics };
   const mergedFingerprint = digest(JSON.stringify(semantic(merged, cover || remote.cover?.sha256)));

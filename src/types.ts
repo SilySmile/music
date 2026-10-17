@@ -1,5 +1,5 @@
 export type LyricWord = { time: number; endTime?: number; text: string };
-export type LyricLine = { time: number; text: string; translation?: string; words?: LyricWord[]; wordTiming?: 'estimated'; timingNote?: string };
+export type LyricLine = { time: number; endTime?: number; text: string; translation?: string; words?: LyricWord[]; wordTiming?: 'estimated'; timingNote?: string };
 
 export type Track = {
   id: string;

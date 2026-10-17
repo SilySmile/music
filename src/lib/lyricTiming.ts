@@ -1,5 +1,15 @@
 import type { LyricLine, LyricWord } from '../types';
 
+export function lineEndMetadata(line: LyricLine): Pick<LyricLine, 'endTime'> {
+  return typeof line.endTime === 'number' && Number.isFinite(line.endTime) && line.time >= 0 && line.endTime > line.time ? { endTime: line.endTime } : {};
+}
+
+// A phrase may finish well before the next timestamp (an instrumental break).
+export function singingEnd(line: LyricLine, boundary: number): number {
+  const end = lineEndMetadata(line).endTime ?? timedWords(line)?.at(-1)?.endTime;
+  return end !== undefined && end > line.time ? Math.min(end, boundary) : boundary;
+}
+
 export function wordTimingMetadata(line: LyricLine): Pick<LyricLine, 'wordTiming' | 'timingNote'> {
   return line.wordTiming === 'estimated' && timedWords(line) ? { wordTiming: 'estimated', ...(typeof line.timingNote === 'string' ? { timingNote: line.timingNote.slice(0, 600) } : {}) } : {};
 }
@@ -33,8 +43,11 @@ export function lyricTimestamp(seconds: number, precision = 3) {
 
 export function enhancedLyricText(line: LyricLine): string {
   const words = timedWords(line);
-  if (!words) return line.text;
-  return words.map((word, index) => `<${lyricTimestamp(word.time)}>${word.text}${word.endTime !== undefined && word.endTime !== words[index + 1]?.time ? `<${lyricTimestamp(word.endTime)}>` : ''}`).join('');
+  // Per-line extension preserves sung end without inventing word timestamps.
+  const end = lineEndMetadata(line).endTime;
+  const marker = end === undefined ? '' : `[x-end:${lyricTimestamp(end)}]`;
+  if (!words) return marker + line.text;
+  return marker + words.map((word, index) => `<${lyricTimestamp(word.time)}>${word.text}${word.endTime !== undefined && word.endTime !== words[index + 1]?.time ? `<${lyricTimestamp(word.endTime)}>` : ''}`).join('');
 }
 
 export function extrapolateLyricPosition(position: number, elapsedMs: number, advancing: boolean, playbackRate = 1): number {

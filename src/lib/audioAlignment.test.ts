@@ -8,6 +8,14 @@ const track: Track = { id: 'audio-hash', title: 'Fixture', artist: 'Singer', alb
 const config = { url: 'https://audio.example.test/v1', model: 'text-model', audioModel: 'whisper-1', key: 'fake-local-test-key', autoAlign: true };
 
 describe('audio-backed word alignment', () => {
+  it('retains an instrumental gap after the last recognized word and refuses cross-phrase words', () => {
+    const lines = [{ time: 1, text: '你好' }, { time: 7, text: '再见' }];
+    const words = [{ word: '你', start: 1, end: 2 }, { word: '好', start: 3, end: 4 }];
+    expect(alignSpeechWords(lines, words).lyrics[0].endTime).toBe(4);
+    expect(alignSpeechWords(lines, [{ ...words[0] }, { ...words[1], end: 8 }]).matched).toBe(0);
+    expect(alignSpeechWords([{ ...lines[0], endTime: 3.5 }, lines[1]], words).matched).toBe(0);
+    expect(alignSpeechWords(lines, [{ ...words[0], end: 3.5 }, words[1]]).matched).toBe(0);
+  });
   it('routes audio to the same configured service and rejects text-only official services before upload', () => {
     expect(normalizeAudioAIUrl(config.url)).toBe('https://audio.example.test/v1/audio/transcriptions');
     expect(normalizeAudioAIUrl('https://audio.example.test/v1/chat/completions')).toBe('https://audio.example.test/v1/audio/transcriptions');
@@ -19,7 +27,7 @@ describe('audio-backed word alignment', () => {
   it('uses sung word starts and explicit ends while preserving punctuation, spaces and Chinese', () => {
     const result = alignSpeechWords(track.lyrics, [{ word: 'Hello', start: 1.2, end: 1.6 }, { word: 'world', start: 3, end: 5 }, { word: 'Stay', start: 10, end: 10.4 }, { word: 'here', start: 10.7, end: 12 }]);
     expect(result).toMatchObject({ matched: 2, unmatched: 0 });
-    expect(result.lyrics[0]).toEqual({ time: 1.2, text: 'Hello, world!', translation: '你好世界', words: [{ time: 1.2, endTime: 1.6, text: 'Hello, ' }, { time: 3, endTime: 5, text: 'world!' }] });
+    expect(result.lyrics[0]).toEqual({ time: 1.2, endTime: 5, text: 'Hello, world!', translation: '你好世界', words: [{ time: 1.2, endTime: 1.6, text: 'Hello, ' }, { time: 3, endTime: 5, text: 'world!' }] });
     expect(track.lyrics[0].time).toBe(1); expect(track.lyrics[0].words).toBeUndefined();
     expect(needsWordAlignment({ lyrics: result.lyrics })).toBe(false);
   });

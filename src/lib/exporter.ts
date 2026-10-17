@@ -17,7 +17,7 @@ export function serializeLyrics(lines: LyricLine[], translated = false) {
     const text = translated ? line.translation ?? '' : enhancedLyricText(line);
     if (!text) return hasTime ? '' : ' ';
     if (line.time < 0) return text;
-    if (timedWords(line)) return `[${lyricTimestamp(line.time)}]${text}`;
+    if (timedWords(line) || line.endTime !== undefined) return `[${lyricTimestamp(line.time)}]${text}`;
     const hundredths = Math.round(line.time * 100);
     return `[${Math.floor(hundredths / 6000).toString().padStart(2, '0')}:${Math.floor(hundredths / 100 % 60).toString().padStart(2, '0')}.${(hundredths % 100).toString().padStart(2, '0')}]${text}`;
   }).filter((line) => line !== '').join('\n');

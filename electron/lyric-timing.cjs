@@ -15,6 +15,7 @@ function timestamp(seconds, precision = 3) {
 }
 function enhancedText(line) {
   const words = timedWords(line);
-  return words ? words.map((word, index) => `<${timestamp(word.time)}>${word.text}${word.endTime !== undefined && word.endTime !== words[index + 1]?.time ? `<${timestamp(word.endTime)}>` : ''}`).join('') : line.text;
+  const marker = Number.isFinite(line.endTime) && line.time >= 0 && line.endTime > line.time ? `[x-end:${timestamp(line.endTime)}]` : '';
+  return marker + (words ? words.map((word, index) => `<${timestamp(word.time)}>${word.text}${word.endTime !== undefined && word.endTime !== words[index + 1]?.time ? `<${timestamp(word.endTime)}>` : ''}`).join('') : line.text);
 }
 module.exports = { timedWords, timestamp, enhancedText };

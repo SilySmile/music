@@ -1,6 +1,6 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import type { AIConfig, LyricLine, LyricWord, Track } from '../types';
-import { timedWords } from './lyricTiming';
+import { lineEndMetadata, timedWords } from './lyricTiming';
 import { normalizeAIUrl } from './network';
 
 export type SpeechWord = { word: string; start: number; end: number };
@@ -64,7 +64,7 @@ export function alignSpeechWords(lines: LyricLine[], speech: SpeechWord[]): Alig
     if (timedWords(line)) { existing++; previousTime = Math.max(previousTime, line.time); return line; }
     if (!vocalLine(line)) { previousTime = Math.max(previousTime, line.time); return line; }
     const target = normalizeSpeechText(line.text);
-    const nextTime = lines.slice(index + 1).find((next) => next.time >= 0)?.time ?? Infinity;
+    const nextTime = Math.min(lines.slice(index + 1).find((next) => next.time >= 0)?.time ?? Infinity, lineEndMetadata(line).endTime ?? Infinity);
     const candidates: { start: number; end: number; distance: number }[] = [];
     for (let start = cursor; start < speech.length; start++) {
       if (speech[start].start < previousTime || speech[start].start >= nextTime) continue;
@@ -79,8 +79,8 @@ export function alignSpeechWords(lines: LyricLine[], speech: SpeechWord[]): Alig
     candidates.sort((a, b) => a.distance - b.distance);
     for (const candidate of candidates) {
       const words = sourceWords(line.text, speech.slice(candidate.start, candidate.end));
-      if (!words) continue;
-      const result = { ...line, time: words[0].time, words };
+      if (!words || words.some((word, wordIndex) => word.time < (words[wordIndex - 1]?.endTime ?? 0) || word.endTime! > nextTime)) continue;
+      const result = { ...line, time: words[0].time, endTime: words.at(-1)!.endTime, words };
       if (!timedWords(result)) continue;
       cursor = candidate.end; previousTime = result.time; matched++;
       return result;
