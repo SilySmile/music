@@ -119,6 +119,7 @@ async function build(runtime, commit) {
   environment.TINGYU_EXECUTABLE = path.join(directory, 'win-unpacked', '弦栖霁.exe');
   for (const script of ['smoke', 'check-playback', 'check-word-lyrics', 'check-auto-alignment', 'check-updates', 'check-online-source', 'check-auto-source', 'check-library-safety', 'check-cloud-listening', 'check-android-storage-ui', 'check-portable']) await node(`scripts/${script}.cjs`);
   await node('scripts/check-auto-alignment.cjs', ['--text']);
+  await node('scripts/check-update-handoff.cjs');
   assertSource(commit, git(['ls-remote', 'origin', 'refs/heads/main']).split(/\s+/)[0], git(['status', '--porcelain', '--untracked-files=all']));
   if (git(['rev-parse', 'HEAD']) !== commit) throw new Error('打包过程中源码提交变化，未创建发布检查点。');
   await node('scripts/create-update-release.cjs');

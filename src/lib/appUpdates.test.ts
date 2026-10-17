@@ -20,21 +20,43 @@ async function fixture(bytes = Buffer.from('fixture installer - must never execu
     return new Response(bytes.subarray(offset), { status: range ? 206 : 200, headers: range ? { 'content-range': `bytes ${offset}-${bytes.length - 1}/${bytes.length}` } : {} });
   });
   const launch = vi.fn();
-  const app = { getPath: () => directory, getVersion: () => '0.3.9', quit: vi.fn() };
-  const options = { app, fetch, testing: true, portable: false, launch, trustConfig: { publicKey: keys.publicKey, defaultBaseUrl: 'https://updates.example.test/music-updates/' } };
+  const app = { getPath: (name: string) => name === 'temp' ? path.dirname(directory) : directory, getVersion: () => '0.3.9', quit: vi.fn() };
+  const options = { app, fetch, testing: true, portable: false, launch, executable: path.join(directory, '弦栖霁.exe'), trustConfig: { publicKey: keys.publicKey, defaultBaseUrl: 'https://updates.example.test/music-updates/' } };
   return { directory, fetch, launch, app, options, envelope, digest };
 }
-afterEach(async () => { for (const directory of directories.splice(0)) { expect(path.dirname(directory)).toBe(path.resolve('test-results')); expect(path.basename(directory)).toMatch(/^updater-/); await fs.rm(directory, { recursive: true }); } });
+afterEach(async () => { for (const directory of directories.splice(0)) { expect(path.dirname(directory)).toBe(path.resolve('test-results')); expect(path.basename(directory)).toMatch(/^(updater-|xianqiji-update-)/); await fs.rm(directory, { recursive: true, force: true }); } });
 describe('Windows signed in-app updates', () => {
-  it('launches a visible installer without the silent switch and quits only after successful launch', async () => {
+  it('runs a verified installer outside the installation tree and only then exits the player', async () => {
     const data = await fixture();
-    const launch = vi.fn((_filename: string, _args: string[], _options: Record<string, unknown>) => { const child = Object.assign(new EventEmitter(), { unref: vi.fn() }); queueMicrotask(() => child.emit('spawn')); return child; });
+    const launch = vi.fn((filename: string, _args: string[], _options: Record<string, unknown>) => { directories.push(path.dirname(filename)); const child = Object.assign(new EventEmitter(), { unref: vi.fn() }); queueMicrotask(() => child.emit('spawn')); return child; });
     const updates = createUpdates({ ...data.options, testing: false, launch });
     await updates.check(); await updates.download();
     expect((await updates.install()).installed).toBe(true);
     expect(launch.mock.calls[0][1]).not.toContain('/S');
-    expect(launch.mock.calls[0][2]).toMatchObject({ windowsHide: false });
+    const [staged, args, settings] = launch.mock.calls[0];
+    expect(path.dirname(path.dirname(staged))).toBe(path.resolve('test-results'));
+    expect(await fs.readFile(staged)).toEqual(await fs.readFile(path.join(data.directory, 'Updates', `${data.digest}.exe`)));
+    expect(args).toContain('/XQ_STAGED'); expect(args.at(-1)).toBe(`/D=${data.directory}`);
+    expect(settings).toMatchObject({ windowsHide: false, cwd: path.dirname(staged), detached: true, windowsVerbatimArguments: true, argv0: `"${staged}"` });
+    await expect(updates.install()).rejects.toThrow('另一个');
     await new Promise((resolve) => setTimeout(resolve, 350)); expect(data.app.quit).toHaveBeenCalledTimes(1);
+  });
+  it('keeps the player open and the original download intact if installer startup fails', async () => {
+    const data = await fixture();
+    const launch = vi.fn((filename: string) => { directories.push(path.dirname(filename)); const child = Object.assign(new EventEmitter(), { unref: vi.fn() }); queueMicrotask(() => child.emit('error', new Error('launch denied'))); return child; });
+    const updates = createUpdates({ ...data.options, testing: false, launch });
+    await updates.check(); await updates.download();
+    await expect(updates.install()).rejects.toThrow('launch denied');
+    expect(data.app.quit).not.toHaveBeenCalled();
+    expect((await fs.stat(path.join(data.directory, 'Updates', `${data.digest}.exe`))).size).toBeGreaterThan(0);
+    await expect(updates.install()).rejects.toThrow('launch denied');
+  });
+  it('rejects a temporary directory inside the install tree before launching or exiting', async () => {
+    const data = await fixture();
+    const updates = createUpdates({ ...data.options, testing: false, app: { ...data.app, getPath: () => data.directory } });
+    await updates.check(); await updates.download();
+    await expect(updates.install()).rejects.toThrow('临时目录位于程序');
+    expect(data.app.quit).not.toHaveBeenCalled(); expect(data.launch).not.toHaveBeenCalled();
   });
   it('saves a custom domain, checks and downloads a signed release, rechecks it before test installation', async () => {
     const fixtureData = await fixture(); const updates = createUpdates(fixtureData.options);

@@ -6,7 +6,7 @@ const { spawn } = require('node:child_process');
 const trust = require('../updates/public.json');
 const { baseUrl, compareVersions, verifyEnvelope, artifactUrl } = require('../updates/protocol.cjs');
 
-module.exports = function createUpdates({ app, fetch, progress = () => {}, testing = false, launch = spawn, portable = !!process.env.PORTABLE_EXECUTABLE_DIR, trustConfig = trust }) {
+module.exports = function createUpdates({ app, fetch, progress = () => {}, testing = false, launch = spawn, portable = !!process.env.PORTABLE_EXECUTABLE_DIR, trustConfig = trust, executable = process.execPath }) {
   const directory = path.join(app.getPath('userData'), 'Updates');
   const configPath = path.join(app.getPath('userData'), 'update-settings.json');
   const releasePath = path.join(directory, 'checked-release.json');
@@ -15,6 +15,7 @@ module.exports = function createUpdates({ app, fetch, progress = () => {}, testi
   let checked;
   let state = { phase: 'idle', currentVersion: app.getVersion(), platform, bytes: 0, total: 0, message: '' };
   let running = false;
+  let installing = false;
   let controller;
   async function atomic(filename, value) {
     await fs.mkdir(path.dirname(filename), { recursive: true });
@@ -115,15 +116,39 @@ module.exports = function createUpdates({ app, fetch, progress = () => {}, testi
     finally { await handle?.sync().catch(() => {}); await handle?.close().catch(() => {}); controller = undefined; running = false; }
   }
   async function install() {
-    if (running) throw new Error('更新下载仍在进行');
-    const { artifact } = await release(); const target = filename(artifact);
-    if ((await fs.stat(target)).size !== artifact.size || await hash(target) !== artifact.sha256) throw new Error('安装包已改变，拒绝运行，请重新下载');
-    if (testing) return { installed: false, testVerified: true, path: target };
-    if (portable) return { installed: false, portable: true, path: target };
-    const installRoot = path.dirname(process.execPath);
-    await new Promise((resolve, reject) => { const child = launch(target, ['/currentuser', `/D=${installRoot}`], { detached: true, stdio: 'ignore', windowsHide: false }); child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); }); });
-    setTimeout(() => app.quit(), 300);
-    return { installed: true };
+    if (running || installing) throw new Error('另一个更新或安装操作正在进行');
+    installing = true;
+    let launched = false;
+    let stage;
+    let staged;
+    try {
+      const { payload, artifact } = await release(); const target = filename(artifact);
+      if ((await fs.stat(target)).size !== artifact.size || await hash(target) !== artifact.sha256) throw new Error('安装包已改变，拒绝运行，请重新下载');
+      if (testing) return { installed: false, testVerified: true, path: target };
+      if (portable) return { installed: false, portable: true, path: target };
+      const installRoot = path.dirname(executable);
+      const temporaryRoot = await fs.realpath(app.getPath('temp'));
+      const relative = path.relative(await fs.realpath(installRoot), temporaryRoot);
+      if (!relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))) throw new Error('系统临时目录位于程序安装目录内，无法安全启动更新。请将 TEMP 恢复为独立的临时目录后重试。');
+      // NSIS closes processes whose executable is beneath $INSTDIR. Never run
+      // the installer from Data/Updates: that makes it close itself mid-update.
+      stage = await fs.mkdtemp(path.join(temporaryRoot, 'xianqiji-update-'));
+      staged = path.join(stage, `Xianqiji-Setup-${payload.version}-x64.exe`);
+      await fs.copyFile(target, staged, require('node:fs').constants.COPYFILE_EXCL);
+      if ((await fs.stat(staged)).size !== artifact.size || await hash(staged) !== artifact.sha256) throw new Error('安装临时副本校验失败，未退出播放器，请重试。');
+      // NSIS requires /D= to be last and unquoted, even with spaces. Quote only
+      // argv0; no shell interprets the destination or other arguments.
+      await new Promise((resolve, reject) => { const child = launch(staged, ['/currentuser', '/XQ_STAGED', `/D=${installRoot}`], { cwd: stage, detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true, argv0: `"${staged}"` }); child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); }); });
+      launched = true;
+      setTimeout(() => app.quit(), 300);
+      return { installed: true };
+    } finally {
+      if (!launched) {
+        if (staged) await fs.unlink(staged).catch(() => {});
+        if (stage) await fs.rmdir(stage).catch(() => {});
+        installing = false;
+      }
+    }
   }
   return { config, saveConfig, check, download, pause: () => { controller?.abort(); return { ...state }; }, state: () => ({ ...state }), install };
 };
