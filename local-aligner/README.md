@@ -21,6 +21,8 @@
 
 不设置开机自启，也不随播放器启动模型。默认 **10 分钟没有音频对齐请求**时服务退出；连接检查不延长这个时间。之后需要时再双击启动。自动处理发现服务停止时只等待，不反复启动模型。
 
+看到就绪提示后可以关闭启动窗口。隐藏的 WSL 启动进程会随模型运行，防止 WSL 在没有前台终端时提前退出；模型空闲退出或手动停止时，这个进程也会结束，不常驻保活。
+
 ## 地址、模型名称、密钥从哪里来
 
 本机已生成 **`runtime/播放器连接配置.json`**，首次准备也会生成或刷新它。直接导入，不需要向第三方申请密钥。
@@ -75,6 +77,15 @@
 
 服务接收**原音频和已确认原歌词**，使用模型时间输出，不凭空把一组词均分成“实测”字时间。使用原句开始到下一句开始的音频范围；有本次手动唱完时间时遵守它。末字结束单独保存，后续间奏不被平均分摊给歌词。
 
+保存结果使用现有的**增强 LRC 歌词文本**，同时更新曲库中的逐字时间，不额外散落一批 JSON 文件。例如：
+
+```lrc
+[00:01.000][x-end:00:03.960]<00:01.000>你<00:01.800><00:03.000>好<00:03.960>
+[00:07.000]下一句
+```
+
+这个例子中“你”在 1.00–1.80 秒唱，“好”在 3.00–3.96 秒唱；字间停顿和 3.96–7.00 秒的间奏都保留。示例仅说明格式，不是对真实歌曲的测量结果。
+
 模型主要针对语音训练，复杂伴奏、合唱、拖音或歌词版本不对仍可能要校准。强对齐不是人声分离，也不能证明每个字确实唱了；缺词或纯音乐片段可能产生不可靠结果。无效、重叠、倒序或零时长被拒绝并保留原数据。普通 LRC 整句时间应大致对应歌曲；纯文本需先设置句子开始时间。
 
 ## 目录与故障排查
@@ -117,4 +128,6 @@ local-aligner/
 - [vLLM 官方对齐输入与时间标记示例](https://github.com/vllm-project/vllm/blob/v0.20.2/examples/pooling/token_classify/forced_alignment_offline.py)
 - [vLLM 官方 Windows / WSL 要求](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/)
 - [Microsoft WSL 安装、导入与停止命令](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)
+- [Microsoft WSL 后台服务生命周期说明](https://learn.microsoft.com/en-us/windows/wsl/systemd)
+- [systemd-run 等待服务退出选项](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html)
 - [Qwen 官方模型说明](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)

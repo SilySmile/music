@@ -140,11 +140,16 @@ try {
         $parts = ($gpu | Select-Object -First 1) -split ','
         if ($parts.Length -ne 2 -or [double]$parts[1] -lt ([double]$parts[0] * $value.gpu_memory_utilization + $value.min_free_gpu_mb)) { throw '当前空闲显存不足以加载模型并保留余量，请先关闭其他 GPU 软件。' }
         Write-Host '正在启动模型。首次启动会编译内核，日志保存在 runtime/logs/server.log。'
-        Call-Wsl -Arguments @('bash',(LinuxPath (Join-Path $PSScriptRoot 'start.sh')),(LinuxPath $taskRoot))
+        # This hidden client lives until systemd-run --wait finishes. It survives
+        # closing this launcher and does not hold WSL open after model idle exit.
+        $worker = Start-Process -FilePath wsl.exe -ArgumentList @('--distribution',$taskDistro,'--user','root','--exec','bash',('"' + (LinuxPath (Join-Path $PSScriptRoot 'start.sh')) + '"'),('"' + (LinuxPath $taskRoot) + '"')) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $taskRuntime 'logs/launcher.log') -RedirectStandardError (Join-Path $taskRuntime 'logs/launcher-error.log')
+        $workerHandle = $worker.Handle
         for ($attempt=0; $attempt -lt 90; $attempt++) {
+            $worker.Refresh()
+            if ($worker.HasExited -and $worker.ExitCode -ne 0) { throw '模型启动进程已退出，请查看 runtime/logs/server.log 和 launcher-error.log。' }
             try {
                 $result = Invoke-RestMethod -Uri $health -Headers $headers -TimeoutSec 3
-                if ($result.service -eq 'xianqiji-forced-aligner' -and $result.ready) {
+                if ($result.service -eq 'xianqiji-forced-aligner' -and $result.ready -and $result.model -eq $value.model_name) {
                     Write-Host "模型已就绪：$($result.model)"
                     Write-Host "地址：http://127.0.0.1:$($value.port)/v1"
                     Write-Host "请在播放器导入：$taskConnection"

@@ -9,8 +9,9 @@ if systemctl is-active --quiet xianqiji-aligner.service; then
     exit 0
 fi
 mkdir -p "$root/runtime/logs" "$root/runtime/tmp"
-# No enable/autostart; resource limits apply only to this transient unit.
-systemd-run --unit=xianqiji-aligner --collect --service-type=exec \
+# Keep the hidden Windows WSL client attached until the model exits: systemd
+# services alone do not keep a WSL instance alive. No enable/autostart.
+exec systemd-run --unit=xianqiji-aligner --collect --wait --service-type=exec \
   --property=MemoryMax=8G --property=CPUQuota=600% --property=Nice=10 \
   --property=OOMPolicy=stop --property=KillMode=control-group \
   --property="WorkingDirectory=$root/src" \
