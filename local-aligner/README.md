@@ -2,6 +2,8 @@
 
 本目录包含启动脚本、服务端、配置和本文档。原模型继续保存在 **`E:\work\model\Qwen3-ForcedAligner-0.6B`**，不移动、不改写、不重复下载。部署环境、缓存、日志与临时文件集中在本目录 `runtime/`，不安装进日常 Python 环境。
 
+本机实际部署目录统一为 **`E:\work\model\local-aligner`**，启动、停止脚本也在这里。播放器项目中的 `local-aligner` 是指向此目录的链接，用于保留源码管理与发布检查入口，实际文件只有一份。连接配置位于 `E:\work\model\local-aligner\runtime\播放器连接配置.json`。
+
 当前电脑检查结果：RTX 4060 Laptop 8GB 显存、约 32GB 内存；**WSL 尚未安装**。播放器接口和模拟测试可验证，但本机尚不能直接运行 Linux vLLM，必须先完成首次准备。尚未在本机完成真实 GPU 推理测试。
 
 ## 第一次准备

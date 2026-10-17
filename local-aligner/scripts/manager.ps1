@@ -1,6 +1,8 @@
 ﻿param([ValidateSet('Prepare','Start','Stop','Status','Check','Configure')][string]$Action = 'Check')
 $ErrorActionPreference = 'Stop'
 $taskRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$taskRootItem = Get-Item -LiteralPath $taskRoot
+if ($taskRootItem.LinkType -eq 'Junction') { $taskRoot = [IO.Path]::GetFullPath(@($taskRootItem.Target)[0]) }
 $taskRuntime = Join-Path $taskRoot 'runtime'
 $taskDistro = 'XianqijiAligner'
 $taskConfig = Join-Path $taskRuntime 'service.json'
@@ -50,6 +52,12 @@ function New-Connection {
         Write-Json $taskConfig $value
     }
     $value = Read-Json $taskConfig
+    # Refresh only the temporary path after moving the deployment directory.
+    $tempDir = LinuxPath (Join-Path $taskRuntime 'tmp')
+    if ($value.temp_dir -ne $tempDir) {
+        $value | Add-Member -NotePropertyName temp_dir -NotePropertyValue $tempDir -Force
+        Write-Json $taskConfig $value
+    }
     Write-Json $taskConnection @{ format='xianqiji-local-aligner'; url="http://127.0.0.1:$($value.port)/v1"; model=$value.model_name; key=$value.api_key; automatic=$false; concurrency=2 }
 }
 try {

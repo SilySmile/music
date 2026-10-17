@@ -1,8 +1,9 @@
 // Real Electron IPC + loopback HTTP; all audio/model outputs are isolated fixtures.
-const { _electron } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const path = require('node:path');
+const projectRoot = path.resolve(process.env.XIANQIJI_PLAYER_ROOT || process.cwd());
+const { _electron } = require(process.env.PLAYWRIGHT_MODULE || require.resolve('playwright', { paths: [projectRoot] }));
 const http = require('node:http');
 const fs = require('node:fs/promises');
-const path = require('node:path');
 const assert = require('node:assert/strict');
 async function until(probe, label) {
   const deadline = Date.now() + 15000;
@@ -13,8 +14,8 @@ async function until(probe, label) {
   throw new Error(`Timeout: ${label}`);
 }
 async function main() {
-  const root = path.resolve(__dirname, '../..');
-  const output = path.join(root, 'local-aligner/runtime');
+  const root = projectRoot;
+  const output = path.resolve(__dirname, '../runtime');
   await fs.mkdir(output, { recursive: true });
   const profile = await fs.mkdtemp(path.join(output, 'player-test-'));
   const key = 'fixture-local-key-not-user-secret';
