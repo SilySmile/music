@@ -11,3 +11,4 @@ android/gradlew text eol=lf
 *.ico binary
 *.zip binary
 *.jar binary
+local-aligner/**/*.ps1 text eol=crlf

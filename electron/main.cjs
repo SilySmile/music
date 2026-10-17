@@ -221,6 +221,7 @@ function installIpc() {
   const audioAI = require('./audio-alignment.cjs')({ fetch: (...args) => net.fetch(...args) });
   ipcMain.handle('network:audio-ai', async (event, request) => { requireWindow(event, true); return audioAI.request(request); });
   ipcMain.handle('network:cancel-audio-ai', (event, id) => { requireWindow(event, true); audioAI.cancel(id); });
+  ipcMain.handle('network:forced-health', (event, config) => { requireWindow(event, true); return audioAI.check(config); });
   require('./update-ipc.cjs')({ app, ipcMain, net, requireWindow, getWindow: () => mainWindow, shell, testing, installerTempRoot });
   require('./library-ipc.cjs')({ app, ipcMain, dialog, shell, requireWindow, getWindow: () => mainWindow });
   require('./transfers.cjs')({ app, ipcMain, dialog, shell, requireWindow, getWindow: () => mainWindow, testing });
@@ -279,7 +280,7 @@ function installIpc() {
   ipcMain.handle('ai:save-key', async (event, key) => {
     requireWindow(event, true);
     if (!safeStorage.isEncryptionAvailable()) throw new Error('系统加密不可用，请仅在本次运行中使用密钥。');
-    if (typeof key !== 'string' || !key.trim() || key.length > 1000 || /[\r\n]/.test(key)) throw new Error('无效的 API Key');
+    if (typeof key !== 'string' || !key.trim() || key.length > 8192 || /[\r\n]/.test(key)) throw new Error('无效的 API Key');
     const temporary = `${keyPath}.tmp`;
     await fs.writeFile(temporary, JSON.stringify({ version: 1, encryption: 'Windows-DPAPI', ciphertext: safeStorage.encryptString(key.trim()).toString('base64') }, null, 2));
     await fs.rename(temporary, keyPath);

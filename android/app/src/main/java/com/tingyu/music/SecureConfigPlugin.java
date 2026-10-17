@@ -63,7 +63,7 @@ public class SecureConfigPlugin extends Plugin {
     public void saveKey(PluginCall call) {
         try {
             String value = call.getString("key", "").trim();
-            if (value.isEmpty() || value.length() > (slot(call).equals("cloud") ? 8192 : 1000) || value.contains("\n") || value.contains("\r")) throw new Exception("无效的安全配置");
+            if (value.isEmpty() || value.length() > 8192 || value.contains("\n") || value.contains("\r")) throw new Exception("无效的安全配置");
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.ENCRYPT_MODE, key(true, slot(call)));
             JSONObject envelope = new JSONObject(); envelope.put("version", 1); envelope.put("encryption", "AndroidKeyStore-AES-GCM");
             envelope.put("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP));

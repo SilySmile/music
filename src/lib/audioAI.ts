@@ -47,10 +47,11 @@ export async function requestAudioAI(request: AudioAIRequest, signal: AbortSigna
   const form = new FormData();
   form.append('file', new Blob([Uint8Array.from(request.bytes)], { type: request.type }), request.filename);
   form.append('model', request.model); form.append('response_format', 'verbose_json'); form.append('timestamp_granularities[]', 'word');
+  if (request.alignment) form.append('alignment', JSON.stringify(request.alignment));
   if (request.language) form.append('language', request.language);
   if (request.prompt) form.append('prompt', request.prompt);
-  const response = await fetch(request.url, { method: 'POST', headers: { Authorization: `Bearer ${request.key}` }, body: form, signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]), credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer' });
-  if (!response.ok) throw new Error(`音频识别失败（HTTP ${response.status}）。请检查服务是否支持音频时间戳、识别模型和余额；本轮未自动重试。`);
+  const response = await fetch(request.url, { method: 'POST', headers: { Authorization: `Bearer ${request.key}` }, body: form, signal: AbortSignal.any([signal, AbortSignal.timeout(request.alignment ? 600000 : 180000)]), credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer' });
+  if (!response.ok) throw new Error(request.alignment ? `本地强对齐失败（HTTP ${response.status}），请检查服务、密钥和资源状态。` : `音频识别失败（HTTP ${response.status}）。请检查服务是否支持音频时间戳、识别模型和余额；本轮未自动重试。`);
   return response.json();
 }
 

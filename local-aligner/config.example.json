@@ -1,0 +1,16 @@
+{
+  "model_path": "E:\\work\\model\\Qwen3-ForcedAligner-0.6B",
+  "model_name": "qwen3-forced-aligner",
+  "port": 8765,
+  "gpu_memory_utilization": 0.45,
+  "max_concurrency": 2,
+  "max_batch_size": 2,
+  "cpu_threads": 4,
+  "min_free_gpu_mb": 1536,
+  "min_available_memory_mb": 4096,
+  "max_cpu_percent": 85,
+  "max_gpu_temperature": 82,
+  "max_segment_seconds": 60,
+  "max_track_seconds": 1200,
+  "idle_exit_seconds": 600
+}

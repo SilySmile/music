@@ -53,8 +53,9 @@ export type DesktopSnapshot = {
 };
 export type DesktopAction = 'play-pause' | 'previous' | 'next' | 'settings' | 'show-main' | 'minimize' | 'quit';
 export type NetworkRequest = { service: 'lyrics' | 'translation'; params: Record<string, string> };
-export type AIConfig = { url: string; model: string; key: string; audioModel?: string; autoAlign?: boolean; alignmentMode?: 'text' | 'audio'; singingHint?: string };
-export type AudioAIRequest = { id: string; url: string; key: string; model: string; filename: string; type: string; bytes: Uint8Array; language?: string; prompt?: string };
+export type ForcedAlignConfig = { url: string; model: string; key: string; automatic: boolean; concurrency: 1 | 2 };
+export type AIConfig = { url: string; model: string; key: string; audioModel?: string; autoAlign?: boolean; alignmentMode?: 'text' | 'audio' | 'forced'; singingHint?: string; forced?: ForcedAlignConfig };
+export type AudioAIRequest = { id: string; url: string; key: string; model: string; filename: string; type: string; bytes: Uint8Array; language?: string; prompt?: string; alignment?: { trackId: string; duration: number; lines: { id: number; text: string; start: number; end: number; units: string[] }[] } };
 export type ShortcutConfig = { enabled: boolean; bindings: Record<string, string>; status: Record<string, 'ok' | 'conflict' | 'disabled'>; path: string };
 export type AIRequest = { url: string; key: string; body: Record<string, unknown> };
 export type LibraryInfo = { path: string; previousPath: string; internalPath: string; trackCount: number; legacyMigrated: boolean; moving: boolean; error?: string };
@@ -119,6 +120,7 @@ declare global {
       requestAI(request: AIRequest): Promise<unknown>;
       requestAudioAI(request: AudioAIRequest): Promise<unknown>;
       cancelAudioAI(id: string): Promise<void>;
+      checkForcedAlignment(config: Pick<ForcedAlignConfig, 'url' | 'key' | 'model'>): Promise<import('./lib/forcedAlignment').ForcedHealth>;
       getAIKey(): Promise<string>;
       saveAIKey(key: string): Promise<void>;
       clearAIKey(): Promise<void>;

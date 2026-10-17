@@ -59,6 +59,7 @@ contextBridge.exposeInMainWorld('tingyuDesktop', {
   requestAI: (request) => ipcRenderer.invoke('network:ai', request),
   requestAudioAI: (request) => ipcRenderer.invoke('network:audio-ai', request),
   cancelAudioAI: (id) => ipcRenderer.invoke('network:cancel-audio-ai', id),
+  checkForcedAlignment: (config) => ipcRenderer.invoke('network:forced-health', config),
   getSourceConfig: () => ipcRenderer.invoke('source:get-config'),
   saveSourceConfig: (value) => ipcRenderer.invoke('source:save-config', value),
   requestSource: (request) => ipcRenderer.invoke('source:request', request),
