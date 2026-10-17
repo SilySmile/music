@@ -6,7 +6,7 @@ const { spawn } = require('node:child_process');
 const trust = require('../updates/public.json');
 const { baseUrl, compareVersions, verifyEnvelope, artifactUrl } = require('../updates/protocol.cjs');
 
-module.exports = function createUpdates({ app, fetch, progress = () => {}, testing = false, launch = spawn, portable = !!process.env.PORTABLE_EXECUTABLE_DIR, trustConfig = trust, executable = process.execPath }) {
+module.exports = function createUpdates({ app, fetch, progress = () => {}, testing = false, launch = spawn, portable = !!process.env.PORTABLE_EXECUTABLE_DIR, trustConfig = trust, executable = process.execPath, installerTempRoot = app.getPath('temp') }) {
   const directory = path.join(app.getPath('userData'), 'Updates');
   const configPath = path.join(app.getPath('userData'), 'update-settings.json');
   const releasePath = path.join(directory, 'checked-release.json');
@@ -127,7 +127,7 @@ module.exports = function createUpdates({ app, fetch, progress = () => {}, testi
       if (testing) return { installed: false, testVerified: true, path: target };
       if (portable) return { installed: false, portable: true, path: target };
       const installRoot = path.dirname(executable);
-      const temporaryRoot = await fs.realpath(app.getPath('temp'));
+      const temporaryRoot = await fs.realpath(installerTempRoot);
       const relative = path.relative(await fs.realpath(installRoot), temporaryRoot);
       if (!relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))) throw new Error('系统临时目录位于程序安装目录内，无法安全启动更新。请将 TEMP 恢复为独立的临时目录后重试。');
       // NSIS closes processes whose executable is beneath $INSTDIR. Never run
@@ -138,7 +138,7 @@ module.exports = function createUpdates({ app, fetch, progress = () => {}, testi
       if ((await fs.stat(staged)).size !== artifact.size || await hash(staged) !== artifact.sha256) throw new Error('安装临时副本校验失败，未退出播放器，请重试。');
       // NSIS requires /D= to be last and unquoted, even with spaces. Quote only
       // argv0; no shell interprets the destination or other arguments.
-      await new Promise((resolve, reject) => { const child = launch(staged, ['/currentuser', '/XQ_STAGED', `/D=${installRoot}`], { cwd: stage, detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true, argv0: `"${staged}"` }); child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); }); });
+      await new Promise((resolve, reject) => { const child = launch(staged, ['/currentuser', '/XQ_STAGED', `/D=${installRoot}`], { cwd: stage, detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true, argv0: `"${staged}"`, env: { ...process.env, TEMP: stage, TMP: stage } }); child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); }); });
       launched = true;
       setTimeout(() => app.quit(), 300);
       return { installed: true };

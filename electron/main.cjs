@@ -6,6 +6,9 @@ const fs = require('node:fs/promises');
 app.setAppUserModelId('com.tingyu.music');
 protocol.registerSchemesAsPrivileged([{ scheme: 'xianqiji', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }]);
 const testing = process.env.TINGYU_TEST === '1';
+// Keep the external Windows temp path before redirecting ordinary app data.
+// Installers and their uninstallers must never inherit Data/Temp.
+const installerTempRoot = app.getPath('temp');
 const syncFs = require('node:fs');
 const { profilePath, migrateProfile } = require('./profile.cjs');
 const dataPath = profilePath({ packaged: app.isPackaged, executable: process.execPath, portableDirectory: process.env.PORTABLE_EXECUTABLE_DIR, workspace: path.join(__dirname, '..'), testing, testData: process.env.TINGYU_TEST_DATA });
@@ -218,7 +221,7 @@ function installIpc() {
   const audioAI = require('./audio-alignment.cjs')({ fetch: (...args) => net.fetch(...args) });
   ipcMain.handle('network:audio-ai', async (event, request) => { requireWindow(event, true); return audioAI.request(request); });
   ipcMain.handle('network:cancel-audio-ai', (event, id) => { requireWindow(event, true); audioAI.cancel(id); });
-  require('./update-ipc.cjs')({ app, ipcMain, net, requireWindow, getWindow: () => mainWindow, shell, testing });
+  require('./update-ipc.cjs')({ app, ipcMain, net, requireWindow, getWindow: () => mainWindow, shell, testing, installerTempRoot });
   require('./library-ipc.cjs')({ app, ipcMain, dialog, shell, requireWindow, getWindow: () => mainWindow });
   require('./transfers.cjs')({ app, ipcMain, dialog, shell, requireWindow, getWindow: () => mainWindow, testing });
   const keyPath = path.join(app.getPath('userData'), 'ai-config.json');

@@ -1,5 +1,7 @@
 ; Older clients launch the installer from <install>/Data/Updates. Relocate
 ; before the installer mutex and old-uninstaller process checks can run.
+; The player redirects TEMP/TMP into Data/Temp, so GetTempFileName without
+; an explicit directory would simply relocate us back under the install tree.
 !macro preInit
   !ifndef BUILD_UNINSTALLER
   ${StdUtils.GetAllParameters} $R0 "0"
@@ -7,13 +9,37 @@
   ${GetOptions} $R0 "/XQ_STAGED" $R1
   ${If} ${Errors}
     ClearErrors
-    GetTempFileName $R2
+    ; Resolve LocalAppData through Windows, independently of inherited TEMP.
+    Push $0
+    Push $1
+    Push $2
+    StrCpy $R2 ""
+    StrCpy $2 0
+    System::Call 'shell32::SHGetKnownFolderPath(g "{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}", i 0, p 0, *p .r2)i.r1'
+    ${If} $1 == 0
+      System::Call 'kernel32::lstrcpynW(w .r0, p r2, i ${NSIS_MAX_STRLEN})p'
+      StrCpy $R2 "$0\Temp"
+    ${EndIf}
+    ${If} $2 != 0
+      System::Call 'ole32::CoTaskMemFree(p r2)'
+    ${EndIf}
+    Pop $2
+    Pop $1
+    Pop $0
+    ${If} $R2 == ""
+      MessageBox MB_OK|MB_ICONSTOP "无法获取 Windows 安装临时目录，安装未开始。"
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+    CreateDirectory "$R2"
+    GetTempFileName $R3 "$R2"
     ${If} ${Errors}
       MessageBox MB_OK|MB_ICONSTOP "无法准备安装临时目录，请检查系统 TEMP 设置后重试。"
       SetErrorLevel 2
       Quit
     ${EndIf}
-    Delete "$R2"
+    Delete "$R3"
+    StrCpy $R2 "$R3"
     CreateDirectory "$R2"
     ${If} ${Errors}
       MessageBox MB_OK|MB_ICONSTOP "无法创建安装临时目录，请检查系统 TEMP 权限后重试。"
@@ -27,6 +53,20 @@
       Quit
     ${EndIf}
     SetOutPath "$R2"
+    ; The new installer AND its old-uninstaller child must inherit this path.
+    ; Changing only the executable location leaves NSIS $PLUGINSDIR in Data.
+    System::Call 'kernel32::SetEnvironmentVariable(t "TEMP", t "$R2")i.r3'
+    ${If} $3 == 0
+      MessageBox MB_OK|MB_ICONSTOP "无法设置安装临时环境，安装未开始。"
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+    System::Call 'kernel32::SetEnvironmentVariable(t "TMP", t "$R2")i.r3'
+    ${If} $3 == 0
+      MessageBox MB_OK|MB_ICONSTOP "无法设置安装临时环境，安装未开始。"
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
     ClearErrors
     Exec '"$R2\$EXEFILE" /XQ_STAGED $R0'
     ${If} ${Errors}

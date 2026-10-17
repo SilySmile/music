@@ -12,6 +12,8 @@ async function main() {
   const install = path.join(directory, '旧版程序 with spaces');
   const updates = path.join(install, 'Data', 'Updates');
   await fs.mkdir(updates, { recursive: true });
+  const pollutedTemp = path.join(install, 'Data', 'Temp');
+  await fs.mkdir(pollutedTemp, { recursive: true });
   const sentinel = path.join(install, 'Data', 'preserved.txt');
   await fs.writeFile(sentinel, 'original library/config fixture, must remain intact');
   const include = path.join(root, 'build', 'installer.nsh');
@@ -55,6 +57,9 @@ Section
   FileOpen $2 "$EXEDIR\\diagnostics.txt" w
   FileWrite $2 "$0|$INSTDIR|$CMDLINE|$1"
   FileClose $2
+  FileOpen $2 "$INSTDIR\\temp-environment.txt" w
+  FileWriteUTF16LE $2 "$TEMP|$PLUGINSDIR"
+  FileClose $2
   \${If} $0 == 0
     SetErrorLevel 91
     Quit
@@ -79,7 +84,8 @@ SectionEnd
       args.push('/XQ_STAGED');
     }
     args.push(`/D=${install}`);
-    const child = spawn(launchFile, args, { cwd: path.dirname(launchFile), windowsHide: true, stdio: 'ignore', ...(name === 'fixed-old-client' ? {} : { windowsVerbatimArguments: true, argv0: `"${launchFile}"` }) });
+    const temp = name === 'fixed-new-client' ? path.dirname(launchFile) : pollutedTemp;
+    const child = spawn(launchFile, args, { cwd: path.dirname(launchFile), windowsHide: true, stdio: 'ignore', env: { ...process.env, TEMP: temp, TMP: temp }, ...(name === 'fixed-old-client' ? {} : { windowsVerbatimArguments: true, argv0: `"${launchFile}"` }) });
     const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
     try { if (!fixed) {
       assert.equal(exit, 91, 'The old in-directory launch must reproduce the self-match.');
@@ -94,6 +100,8 @@ SectionEnd
       }
       assert.ok(staged, 'The relocated installer must finish after the original process exits.');
       assert.ok(!staged.toLowerCase().startsWith(install.toLowerCase()), staged);
+      const temporaryPaths = (await fs.readFile(path.join(install, 'temp-environment.txt'), 'utf16le')).replace(/^\uFEFF/, '').split('|');
+      for (const temporary of temporaryPaths) assert.ok(temporary && !temporary.toLowerCase().startsWith(install.toLowerCase()), temporary);
     }
     assert.equal(await fs.readFile(sentinel, 'utf8'), 'original library/config fixture, must remain intact');
     assert.ok((await fs.stat(output)).size > 0, 'Original update remains available for retry.');

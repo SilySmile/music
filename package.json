@@ -1,7 +1,7 @@
 {
   "name": "tingyu-music",
   "productName": "弦栖霁",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "private": true,
   "type": "module",
   "description": "弦栖霁 · 本地音乐与离线双语歌词播放器",

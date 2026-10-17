@@ -37,8 +37,19 @@ describe('Windows signed in-app updates', () => {
     expect(path.dirname(path.dirname(staged))).toBe(path.resolve('test-results'));
     expect(await fs.readFile(staged)).toEqual(await fs.readFile(path.join(data.directory, 'Updates', `${data.digest}.exe`)));
     expect(args).toContain('/XQ_STAGED'); expect(args.at(-1)).toBe(`/D=${data.directory}`);
-    expect(settings).toMatchObject({ windowsHide: false, cwd: path.dirname(staged), detached: true, windowsVerbatimArguments: true, argv0: `"${staged}"` });
+    expect(settings).toMatchObject({ windowsHide: false, cwd: path.dirname(staged), detached: true, windowsVerbatimArguments: true, argv0: `"${staged}"`, env: { TEMP: path.dirname(staged), TMP: path.dirname(staged) } });
     await expect(updates.install()).rejects.toThrow('另一个');
+    await new Promise((resolve) => setTimeout(resolve, 350)); expect(data.app.quit).toHaveBeenCalledTimes(1);
+  });
+  it('uses the captured external temp path even after the player redirects all app temp paths into Data', async () => {
+    const data = await fixture();
+    const launch = vi.fn((filename: string) => { directories.push(path.dirname(filename)); const child = Object.assign(new EventEmitter(), { unref: vi.fn() }); queueMicrotask(() => child.emit('spawn')); return child; });
+    const updates = createUpdates({ ...data.options, testing: false, launch, installerTempRoot: path.dirname(data.directory), app: { ...data.app, getPath: () => data.directory } });
+    await updates.check(); await updates.download();
+    expect((await updates.install()).installed).toBe(true);
+    const [staged, , settings] = launch.mock.calls[0] as unknown as [string, string[], { env: { TEMP: string, TMP: string } }];
+    expect(path.relative(data.directory, staged)).toMatch(/^\.\./);
+    expect(settings.env.TEMP).toBe(path.dirname(staged)); expect(settings.env.TMP).toBe(path.dirname(staged));
     await new Promise((resolve) => setTimeout(resolve, 350)); expect(data.app.quit).toHaveBeenCalledTimes(1);
   });
   it('keeps the player open and the original download intact if installer startup fails', async () => {
