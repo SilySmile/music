@@ -60,9 +60,9 @@ async function main() {
     assert.equal(await page.locator('.track-row.current .track-name strong').textContent(), finishing);
     console.log('PASS immediate sleep deadline and finish-current-track deadline, with no unwanted next song');
     await page.getByLabel('翻译 API Key', { exact: true }).fill('fixture-key-not-real-123');
-    await page.getByLabel('自动生成缺失的逐字歌词', { exact: true }).uncheck();
+    assert.equal(await page.getByLabel('自动生成缺失的逐字歌词', { exact: true }).count(), 0);
     await page.getByRole('button', { name: '保存 AI 配置', exact: true }).click();
-    await page.getByText('配置已保存；自动逐字生成已关闭，保存配置本身不会调用模型。', { exact: true }).waitFor();
+    await page.getByText('配置已保存。逐字时间请在歌词设置中手动调整或点击 AI 生成；保存配置不会调用模型。', { exact: true }).waitFor();
     const envelope = await fs.readFile(path.join(profile, 'ai-config.json'), 'utf8');
     assert.ok(!envelope.includes('fixture-key-not-real-123')); assert.equal(JSON.parse(envelope).encryption, 'Windows-DPAPI');
     const field = page.getByLabel('播放 / 暂停全局快捷键', { exact: true });
