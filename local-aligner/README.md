@@ -4,26 +4,27 @@
 
 本机实际部署目录统一为 **`E:\work\model\local-aligner`**，启动、停止脚本也在这里。播放器项目中的 `local-aligner` 是指向此目录的链接，用于保留源码管理与发布检查入口，实际文件只有一份。连接配置位于 `E:\work\model\local-aligner\runtime\播放器连接配置.json`。
 
-当前电脑检查结果：RTX 4060 Laptop 8GB 显存、约 32GB 内存；**WSL 尚未安装**。播放器接口和模拟测试可验证，但本机尚不能直接运行 Linux vLLM，必须先完成首次准备。尚未在本机完成真实 GPU 推理测试。
+当前方案为 **Windows 原生 PyTorch / Transformers + 官方 qwen-asr**，使用本机 RTX 4060 Laptop 8GB 显卡与约 32GB 内存。无需 WSL、Linux、虚拟机或单独安装 CUDA Toolkit，不安装 FlashAttention，也不修改系统 Python 的依赖。
+
+已在这台电脑完成真实 CUDA 推理：中文合成语音的逐字时间、约 1.5 秒句内停顿、句尾静音与两路并发请求均通过；另测试两个 59 秒片段组成的批次，CUDA 分配峰值约 2.4GB（不含其他软件、驱动及上下文）。这验证部署与资源控制可用，歌曲中的伴奏、合唱和拖音仍需试听判断准确度。
 
 ## 第一次准备
 
-1. 双击 **`01-首次准备.cmd`**。Windows 权限请求用于安装 WSL 组件。脚本不自动重启；若 Windows 要求重启，请自己重启后再次双击同一个脚本。
-2. 后续准备会下载并核对 Ubuntu 官方镜像，创建专用 WSL2 环境 **`XianqijiAligner`**，虚拟磁盘放在 `runtime/wsl/`。只操作这个专用环境，不关闭或替换其他项目的 Linux 环境。
-3. 安装隔离的 vLLM、CUDA/PyTorch 依赖和音频工具，首次需要网络及数 GB 到十余 GB 磁盘空间。模型仍读取原目录；准备时可看到下载进度。
-4. 看到“准备完成”后无需重复安装。若缺少 CPU 虚拟化支持，须在 BIOS/Windows 完成虚拟化设置，脚本会停止并提示。
+1. 本机已有 Windows 64 位 Python 3.12。其他电脑需要先安装 [Python 3.12](https://www.python.org/downloads/release/python-31210/)（也支持 3.11），并更新 NVIDIA 显卡驱动。
+2. 双击 **`01-首次准备.cmd`**，脚本创建 `runtime/native-env/` 独立环境，安装固定版本的 CUDA PyTorch、官方 qwen-asr、接口与音频依赖。首次联网下载数 GB，解压与缓存需要额外磁盘空间；日志在 `runtime/logs/prepare.log`。
+3. 看到“准备完成”后无需重复安装。模型直接读取已有权重，不重复下载；无需管理员权限和 Windows 重启。
 
 **`05-检查环境.cmd`** 只检查，不安装组件。
 
 ## 需要时启动，不用时停止
 
-- **`02-启动模型.cmd`**：启动专用模型服务，等待“模型已就绪”。重复启动不会加载第二份模型。首次加载可能编译内核，日志在 `runtime/logs/server.log`。
+- **`02-启动模型.cmd`**：启动本机 CUDA 模型服务，等待“模型已就绪”。重复启动不会加载第二份模型。日志在 `runtime/logs/server.log` 与 `server-error.log`。
 - **`04-查看状态.cmd`**：查看模型是否就绪、资源是否充足、正在处理多少首歌曲。
-- **`03-停止模型.cmd`**：停止专用 Linux 环境及推理进程，释放模型显存；不终止其他 WSL 环境。
+- **`03-停止模型.cmd`**：请求服务退出，必要时只结束经过 PID、创建时间、脚本路径及启动标识核对的本目录模型。Windows 作业对象负责回收音频解码子进程，释放模型显存。
 
 不设置开机自启，也不随播放器启动模型。默认 **10 分钟没有音频对齐请求**时服务退出；连接检查不延长这个时间。之后需要时再双击启动。自动处理发现服务停止时只等待，不反复启动模型。
 
-看到就绪提示后可以关闭启动窗口。隐藏的 WSL 启动进程会随模型运行，防止 WSL 在没有前台终端时提前退出；模型空闲退出或手动停止时，这个进程也会结束，不常驻保活。
+看到就绪提示后可以关闭启动窗口。模型在隐藏的独立 Windows 进程中运行，空闲退出或手动停止后释放资源。
 
 ## 地址、模型名称、密钥从哪里来
 
@@ -62,14 +63,14 @@
 | --- | --- |
 | 并发歌曲 | 最多 2 首，可在播放器改为 1 首 |
 | GPU 微批次 | 最多 2 个片段，共用一个模型，不复制多份模型 |
-| vLLM 显存预算 | 45% |
+| PyTorch CUDA 分配器显存预算 | 最高 45%，按空闲显存自动下调；不含驱动与 CUDA 上下文本身 |
 | 服务 CPU 硬限额 | 约 6 个逻辑核的算力，较低调度优先级 |
 | 服务内存硬限额 | 8GB，超限停止服务 |
 | 音频解码 | 同时 1 份，每首最多 20 分钟、上传不超过 24MB |
 | 单句对齐范围 | 最多 60 秒；超出时先设本句唱完时间再重试 |
 | 暂停接新任务 | 空闲显存少于 1.5GB、可用内存少于 4GB、CPU 超过 85% 或 GPU 达到 82°C |
 
-启动前还会检查 Windows 可用内存至少 12GB，给受限服务之外预留余量，且空闲显存能容纳预算并留下余量。播放器通过系统接口同时检查 Windows 主机的可用内存和 CPU，不只看 WSL 内部资源。
+启动前还会检查 Windows 可用内存至少 12GB，给受限服务之外预留余量；显存须至少能容纳总显存 30% 的加载预算，并留下 1.5GB 余量。实际分配器上限按当时空闲量在 30%–45% 之间下调。播放器与原生服务都检查 Windows 主机的可用内存和 CPU。
 
 客户端与服务都有并发上限，不一次解码整库。资源紧张时不接新推理任务，播放器稍后检查；已执行的短批次不强杀 CUDA 内核。显存溢出或引擎异常后停止接任务，避免 OOM 重试风暴；关闭其他占 GPU 软件后再启动。预算和保护降低卡顿风险，不能保证其他软件抢显存时绝无峰值。服务失败不覆盖已保存的音乐和歌词。
 
@@ -102,35 +103,32 @@ local-aligner/
   05-检查环境.cmd
   config.example.json         默认设置，无密钥
   requirements.txt            固定兼容版本
-  scripts/                    Windows 与 Linux 管理脚本
+  scripts/                    Windows 原生管理脚本
   src/                        对齐接口与校验逻辑
   tests/                      隔离测试
   runtime/                    本机生成，不提交、不发布
     service.json              路径、资源参数、本地密钥
     播放器连接配置.json       导入播放器的连接信息
-    wsl/                      专用 Linux 虚拟磁盘，含环境与缓存
-    downloads/                首次安装镜像
+    native-env/               独立 Windows Python 环境，含 CUDA 与音频工具
+    cache/                    Python 安装包与模型工具缓存
+    downloads/                下载与验证用文件
     logs/                     启动与安装日志
     tmp/                      请求临时音频，正常结束自动清理
 ```
 
 - 连接失败：先启动服务。输入地址不会自动启动模型。
+- 旧 WSL 超时提示：当前脚本已经改为 Windows 原生，不会查询或安装 WSL。请从本目录的五个编号脚本运行。
 - 401：重新导入本机连接配置，不使用翻译服务的密钥。
 - 模型名不匹配：以连接配置的 `model` 为准，不填 `E:\...` 路径。
 - 503/资源紧张：查看状态，关闭占显存的软件或降低并发，重启前先停止旧服务。
-- 启动超时：看 `runtime/logs/server.log`，检查 WSL、GPU、依赖和显存；脚本不再启动第二份模型。
+- 启动超时：看 `runtime/logs/server-error.log`，检查 NVIDIA 驱动、依赖和显存；脚本不再启动第二份模型。缺少依赖时重新运行首次准备。
 - 单句区间过长：设置实际唱完时间，再生成本句。
 - 自动未重试：问题解决后点“重试本地强对齐失败项”。
 
 ## 实现依据
 
-固定使用支持当前旧格式权重的 vLLM 0.20.2：`runner=pooling`、`token_classify`、对应架构覆盖，外面封装音频+歌词接口，不把模型当作聊天接口，也无需另外下载 ASR 模型。更换 vLLM 版本或新 `-hf` 权重前须重新验证兼容性。
+固定使用 PyTorch 2.8.0 CUDA 12.8、qwen-asr 0.0.6、Transformers 4.57.6。通过官方加载器读取当前旧格式权重，再用官方模型与处理器执行原文单位的时间分类，不调用会重分词或修补无效时间的便捷包装函数。外面保留原音频+歌词接口，不需要另下 ASR 模型。新版 `-hf` 权重或依赖升级须重新验证。
 
-- [vLLM 官方强对齐支持与旧权重设置](https://docs.vllm.ai/en/v0.20.2/models/pooling_models/token_classify/)
-- [vLLM 官方对齐输入与时间标记示例](https://github.com/vllm-project/vllm/blob/v0.20.2/examples/pooling/token_classify/forced_alignment_offline.py)
-- [vLLM 官方 Windows / WSL 要求](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/)
-- [Microsoft WSL 安装、导入与停止命令](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)
-- [Microsoft WSL 后台服务生命周期说明](https://learn.microsoft.com/en-us/windows/wsl/systemd)
-- [systemd-run 等待服务退出选项](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html)
-- [NVIDIA WSL CUDA 与显卡工具路径说明](https://docs.nvidia.com/cuda/archive/13.0.0/wsl-user-guide/index.html)
+- [Qwen 官方 Transformers 强对齐加载方式](https://github.com/QwenLM/Qwen3-ASR#forcedaligner-usage)
+- [PyTorch 官方 Windows CUDA 安装包](https://pytorch.org/get-started/previous-versions/)
 - [Qwen 官方模型说明](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)

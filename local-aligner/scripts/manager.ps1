@@ -4,175 +4,153 @@ $taskRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $taskRootItem = Get-Item -LiteralPath $taskRoot
 if ($taskRootItem.LinkType -eq 'Junction') { $taskRoot = [IO.Path]::GetFullPath(@($taskRootItem.Target)[0]) }
 $taskRuntime = Join-Path $taskRoot 'runtime'
-$taskDistro = 'XianqijiAligner'
 $taskConfig = Join-Path $taskRuntime 'service.json'
 $taskConnection = Join-Path $taskRuntime '播放器连接配置.json'
-function LinuxPath([string]$Value) {
-    $full = [IO.Path]::GetFullPath($Value)
-    if ($full -notmatch '^([a-zA-Z]):[\\/](.*)$') { throw '请将部署目录放在本机盘符下。' }
-    return '/mnt/' + $Matches[1].ToLowerInvariant() + '/' + $Matches[2].Replace('\','/')
-}
+$taskPython = Join-Path $taskRuntime 'native-env/Scripts/python.exe'
+$taskServer = Join-Path $taskRoot 'src/server.py'
+$taskProcessFile = Join-Path $taskRuntime 'service-process.json'
 function Read-Json([string]$File) { return Get-Content -LiteralPath $File -Raw -Encoding UTF8 | ConvertFrom-Json }
-function Write-Json([string]$File, $Value) {
-    [IO.File]::WriteAllText($File, ($Value | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding $false))
-}
-function Probe-Wsl([string]$Arguments) {
-    $info = New-Object Diagnostics.ProcessStartInfo
-    $info.FileName = 'wsl.exe'; $info.Arguments = $Arguments
-    $info.UseShellExecute = $false; $info.CreateNoWindow = $true
-    $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
-    $info.StandardOutputEncoding = [Text.Encoding]::Unicode
-    $info.StandardErrorEncoding = [Text.Encoding]::Unicode
-    $process = [Diagnostics.Process]::Start($info)
-    $stdout = $process.StandardOutput.ReadToEndAsync()
-    $stderr = $process.StandardError.ReadToEndAsync()
-    if (!$process.WaitForExit(10000)) { $process.Kill(); throw 'WSL 状态检查超时，请检查 Windows 的 WSL 安装状态。' }
-    $result = [pscustomobject]@{ Code=$process.ExitCode; Text=$stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult() }
-    $process.Dispose()
-    return $result
-}
-function Has-Wsl { return (Probe-Wsl '--version').Code -eq 0 }
-function Has-Distro {
-    $probe = Probe-Wsl '--list --quiet'
-    return $probe.Code -eq 0 -and ($probe.Text.Replace([string][char]0,'') -split '\r?\n' | ForEach-Object { $_.Trim() }) -contains $taskDistro
-}
-function Call-Wsl([string[]]$Arguments) {
-    & wsl.exe --distribution $taskDistro --user root --exec @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "WSL 命令失败（$LASTEXITCODE）。请查看上方提示和 runtime/logs。" }
-}
+function Write-Json([string]$File, $Value) { [IO.File]::WriteAllText($File, ($Value | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding $false)) }
 function New-Connection {
-    New-Item -ItemType Directory -Force -Path $taskRuntime,(Join-Path $taskRuntime 'logs'),(Join-Path $taskRuntime 'tmp'),(Join-Path $taskRuntime 'downloads') | Out-Null
-    if (!(Test-Path -LiteralPath $taskConfig)) {
-        $value = Read-Json (Join-Path $taskRoot 'config.example.json')
+    New-Item -ItemType Directory -Force -Path $taskRuntime,(Join-Path $taskRuntime 'logs'),(Join-Path $taskRuntime 'tmp'),(Join-Path $taskRuntime 'cache/pip') | Out-Null
+    $defaults = Read-Json (Join-Path $taskRoot 'config.example.json')
+    if (Test-Path -LiteralPath $taskConfig) { $value = Read-Json $taskConfig } else {
+        $value = $defaults
         $bytes = New-Object byte[] 32
         $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
         try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
         $value | Add-Member -NotePropertyName api_key -NotePropertyValue ([Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_'))
-        $value | Add-Member -NotePropertyName temp_dir -NotePropertyValue (LinuxPath (Join-Path $taskRuntime 'tmp'))
-        Write-Json $taskConfig $value
     }
-    $value = Read-Json $taskConfig
-    # Refresh only the temporary path after moving the deployment directory.
-    $tempDir = LinuxPath (Join-Path $taskRuntime 'tmp')
-    if ($value.temp_dir -ne $tempDir) {
-        $value | Add-Member -NotePropertyName temp_dir -NotePropertyValue $tempDir -Force
-        Write-Json $taskConfig $value
+    foreach ($property in $defaults.PSObject.Properties) {
+        if (!$value.PSObject.Properties[$property.Name]) { $value | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value }
     }
+    $value | Add-Member -NotePropertyName temp_dir -NotePropertyValue (Join-Path $taskRuntime 'tmp') -Force
+    $value | Add-Member -NotePropertyName backend -NotePropertyValue 'transformers' -Force
+    Write-Json $taskConfig $value
     Write-Json $taskConnection @{ format='xianqiji-local-aligner'; url="http://127.0.0.1:$($value.port)/v1"; model=$value.model_name; key=$value.api_key; automatic=$false; concurrency=2 }
 }
-try {
-    if ($Action -eq 'Configure') {
-        New-Connection
-        Write-Host "本地连接配置已生成：$taskConnection（密钥不在终端显示）"
-        exit 0
+function Set-PrivateEnvironment {
+    $env:PIP_CACHE_DIR = Join-Path $taskRuntime 'cache/pip'
+    $env:TEMP = Join-Path $taskRuntime 'tmp'; $env:TMP = $env:TEMP
+    $env:HF_HOME = Join-Path $taskRuntime 'cache/huggingface'
+    $env:HF_HUB_OFFLINE = '1'; $env:TRANSFORMERS_OFFLINE = '1'
+    $env:PYTHONUTF8 = '1'; $env:PYTHONNOUSERSITE = '1'
+    $env:OMP_NUM_THREADS = '4'; $env:MKL_NUM_THREADS = '4'
+    $env:TOKENIZERS_PARALLELISM = 'false'
+}
+function Find-BasePython {
+    foreach ($candidate in @(@('py.exe','-3.12'),@('py.exe','-3.11'),@('python.exe',''))) {
+        if (!(Get-Command $candidate[0] -ErrorAction SilentlyContinue)) { continue }
+        $argsList = @(); if ($candidate[1]) { $argsList += $candidate[1] }
+        $argsList += @('-c','import sys; assert sys.version_info[:2] in [(3,11),(3,12)]; print(sys.executable)')
+        $result = & $candidate[0] @argsList 2>$null
+        if ($LASTEXITCODE -eq 0 -and $result -and (Test-Path -LiteralPath ($result | Select-Object -Last 1))) { return ($result | Select-Object -Last 1) }
     }
+    throw '未找到 Python 3.12/3.11。请安装 Windows 64 位 Python 3.12 后再次运行首次准备；安装地址见 README.md。'
+}
+function Run-Python([string[]]$Arguments) {
+    & $taskPython @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "独立 Python 环境操作失败（$LASTEXITCODE），请查看上方输出和 runtime/logs/prepare.log。" }
+}
+function Get-OwnedProcess {
+    if (!(Test-Path -LiteralPath $taskProcessFile)) { return $null }
+    $state = Read-Json $taskProcessFile
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$state.pid)" -ErrorAction SilentlyContinue
+    if (!$process -or !$process.CommandLine -or !$state.instance) { return $null }
+    $created = ([datetimeoffset]$process.CreationDate).ToUnixTimeMilliseconds() / 1000
+    if ([Math]::Abs($created - [double]$state.created) -gt 2 -or !$process.CommandLine.Contains($state.instance) -or !$process.CommandLine.ToLowerInvariant().Contains($taskServer.ToLowerInvariant()) -or !$process.CommandLine.ToLowerInvariant().Contains($taskConfig.ToLowerInvariant())) { return $null }
+    return $process
+}
+$taskTranscript = $false
+$taskLock = $null
+try {
+    if ($Action -eq 'Configure') { New-Connection; Write-Host "本地连接配置已更新：$taskConnection（密钥保留，不在终端显示）"; exit 0 }
     if ($Action -eq 'Check') {
-        Write-Host "部署目录：$taskRoot"
-        Write-Host "模型目录：$((Read-Json (Join-Path $taskRoot 'config.example.json')).model_path)"
+        Write-Host "Windows 原生部署目录：$taskRoot"
         & nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader
-        if (!(Has-Wsl)) { Write-Host 'WSL 尚未安装：先运行 01-首次准备.cmd；可能需要重启后再运行一次。'; exit 2 }
-        if (!(Has-Distro)) { Write-Host '专用 Linux 环境尚未准备：请运行 01-首次准备.cmd。'; exit 2 }
-        Write-Host 'WSL 专用环境已找到。'; exit 0
+        if (!(Test-Path -LiteralPath $taskPython)) { Write-Host '独立环境尚未准备，请运行 01-首次准备.cmd。不需要 WSL。'; exit 2 }
+        Run-Python -Arguments @('-c',"import torch, qwen_asr, imageio_ffmpeg, fastapi, psutil; assert torch.cuda.is_available(), 'CUDA unavailable'; print('CUDA ready:', torch.cuda.get_device_name(0)); print('Audio tool:', imageio_ffmpeg.get_ffmpeg_exe())")
+        exit 0
     }
     if ($Action -eq 'Prepare') {
         New-Connection
-        if (!(Has-Wsl)) {
-            Write-Host 'vLLM 需要 WSL2。下面仅安装 Windows WSL 组件，不自动重启。'
-            $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-            if (!$admin) {
-                $child = Start-Process -FilePath powershell.exe -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $PSCommandPath + '"'),'-Action','Prepare')
-                if ($child.ExitCode -ne 0) { throw 'WSL 初次安装失败，请查看 runtime/logs/wsl-install.log 和 Windows 虚拟化提示。' }
-                Write-Host '若 Windows 提示需要重启，请重启后再次双击首次准备。'; exit 0
-            }
-            $bootstrap = Start-Process -FilePath wsl.exe -ArgumentList @('--install','--no-distribution','--no-launch') -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput (Join-Path $taskRuntime 'logs/wsl-install.log') -RedirectStandardError (Join-Path $taskRuntime 'logs/wsl-install-error.log')
-            if ($bootstrap.ExitCode -notin @(0,3010)) { throw 'WSL 安装未完成，请根据 runtime/logs/wsl-install-error.log 检查虚拟化支持。' }
-            Write-Host 'WSL 组件已提交安装。请按 Windows 提示重启，然后再次运行首次准备。'
-            exit 0
-        }
-        New-Connection
         $value = Read-Json $taskConfig
         foreach ($file in @('config.json','model.safetensors','tokenizer_config.json','preprocessor_config.json')) {
-            if (!(Test-Path -LiteralPath (Join-Path $value.model_path $file))) { throw "模型文件不完整：$file。仅修改 runtime/service.json 中的 model_path，不要移动原模型。" }
+            if (!(Test-Path -LiteralPath (Join-Path $value.model_path $file))) { throw "模型文件不完整：$file。请检查 runtime/service.json 的 model_path。" }
         }
-        if (!(Has-Distro)) {
-            $imageName = 'ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz'
-            $image = Join-Path $taskRuntime "downloads/$imageName"
-            $base = 'https://cloud-images.ubuntu.com/wsl/releases/noble/current/'
-            Write-Host '下载官方 Ubuntu WSL 镜像并核对 SHA-256，所有文件保存到本目录 runtime。'
-            $sums = (Invoke-WebRequest -Uri ($base + 'SHA256SUMS') -UseBasicParsing).Content
-            $match = [regex]::Match($sums, '(?m)^([a-f0-9]{64})\s+\*?' + [regex]::Escape($imageName) + '\s*$')
-            if (!$match.Success) { throw 'Ubuntu 官方校验列表中未找到镜像，停止安装。' }
-            if (!(Test-Path -LiteralPath $image) -or (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant() -ne $match.Groups[1].Value) {
-                Invoke-WebRequest -Uri ($base + $imageName) -OutFile $image -UseBasicParsing
-            }
-            if ((Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant() -ne $match.Groups[1].Value) { throw 'Ubuntu 镜像校验失败，请重新运行准备。' }
-            $disk = Join-Path $taskRuntime 'wsl'
-            New-Item -ItemType Directory -Force -Path $disk | Out-Null
-            & wsl.exe --import $taskDistro $disk $image --version 2
-            if ($LASTEXITCODE -ne 0) { throw '专用 WSL 环境导入失败。请确认启用了 CPU 虚拟化并完成 Windows 重启。' }
+        Set-PrivateEnvironment
+        Start-Transcript -Path (Join-Path $taskRuntime 'logs/prepare.log') -Append | Out-Null; $taskTranscript = $true
+        if (!(Test-Path -LiteralPath $taskPython)) {
+            $basePython = Find-BasePython
+            & $basePython -m venv (Join-Path $taskRuntime 'native-env')
+            if ($LASTEXITCODE -ne 0) { throw '创建独立 Python 环境失败。' }
         }
-        $linuxSetup = LinuxPath (Join-Path $PSScriptRoot 'prepare.sh')
-        Call-Wsl -Arguments @('bash',$linuxSetup,(LinuxPath $taskRoot))
-        # Only our dedicated distribution is stopped. Other WSL projects stay up.
-        & wsl.exe --terminate $taskDistro
-        if ($LASTEXITCODE -ne 0) { throw '专用环境重新启动准备失败。' }
-        Write-Host "准备完成。以后双击 02-启动模型.cmd 即可。播放器连接配置：$taskConnection"
+        Write-Host '准备 Windows 原生 CUDA 环境，不安装 WSL。首次需下载数 GB 依赖，全部放在本目录。'
+        Run-Python -Arguments @('-m','pip','install','--upgrade','pip')
+        Run-Python -Arguments @('-m','pip','install','torch==2.8.0','torchvision==0.23.0','torchaudio==2.8.0','--index-url','https://download.pytorch.org/whl/cu128')
+        Run-Python -Arguments @('-m','pip','install','-r',(Join-Path $taskRoot 'requirements.txt'))
+        Run-Python -Arguments @('-c',"import torch; from qwen_asr import Qwen3ForcedAligner; import imageio_ffmpeg; assert torch.cuda.is_available(), 'CUDA unavailable: check NVIDIA driver'; print('CUDA ready:', torch.cuda.get_device_name(0)); print(imageio_ffmpeg.get_ffmpeg_exe())")
+        Write-Host "准备完成。双击 02-启动模型.cmd；播放器导入：$taskConnection"
         exit 0
     }
-    if (!(Has-Wsl) -or !(Has-Distro) -or !(Test-Path -LiteralPath $taskConfig)) { throw '请先运行 01-首次准备.cmd，完成后再启动。' }
-    if ($Action -eq 'Stop') {
-        & wsl.exe --terminate $taskDistro
-        if ($LASTEXITCODE -ne 0) { throw '停止失败，请确认专用环境名称。' }
-        Write-Host '模型专用环境已停止，推理进程和显存已释放；其他 WSL 环境不受影响。'
-        exit 0
-    }
+    if (!(Test-Path -LiteralPath $taskConfig)) { throw '请先运行 01-首次准备.cmd。' }
     $value = Read-Json $taskConfig
     $headers = @{ Authorization='Bearer ' + $value.api_key }
     $health = "http://127.0.0.1:$($value.port)/v1/health"
-    if ($Action -eq 'Start') {
-        $existing = $null
-        try {
-            $existing = Invoke-RestMethod -Uri $health -Headers $headers -TimeoutSec 3
-        } catch { }
-        if ($existing.service -eq 'xianqiji-forced-aligner' -and $existing.ready -and $existing.model -eq $value.model_name) { Write-Host '模型已经运行，不会重复加载。'; exit 0 }
-        $socket = New-Object Net.Sockets.TcpClient
-        try {
-            $connect = $socket.BeginConnect('127.0.0.1', [int]$value.port, $null, $null)
-            $occupied = $connect.AsyncWaitHandle.WaitOne(300) -and $socket.Connected
-        } catch { $occupied = $false } finally { $socket.Dispose() }
-        if ($occupied) { throw '服务端口已占用或旧配置仍在运行。请先停止旧服务，或修改 runtime/service.json 中的端口。' }
-        $availableMB = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024
-        if ($availableMB -lt 12288) { throw 'Windows 可用内存不足 12GB，请先关闭占用较多的软件，再启动模型。' }
-        $gpu = & nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader,nounits
-        if ($LASTEXITCODE -ne 0) { throw '无法读取 NVIDIA 显存，请检查显卡驱动。' }
-        $parts = ($gpu | Select-Object -First 1) -split ','
-        if ($parts.Length -ne 2 -or [double]$parts[1] -lt ([double]$parts[0] * $value.gpu_memory_utilization + $value.min_free_gpu_mb)) { throw '当前空闲显存不足以加载模型并保留余量，请先关闭其他 GPU 软件。' }
-        Write-Host '正在启动模型。首次启动会编译内核，日志保存在 runtime/logs/server.log。'
-        # This hidden client lives until systemd-run --wait finishes. It survives
-        # closing this launcher and does not hold WSL open after model idle exit.
-        $worker = Start-Process -FilePath wsl.exe -ArgumentList @('--distribution',$taskDistro,'--user','root','--exec','bash',('"' + (LinuxPath (Join-Path $PSScriptRoot 'start.sh')) + '"'),('"' + (LinuxPath $taskRoot) + '"')) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $taskRuntime 'logs/launcher.log') -RedirectStandardError (Join-Path $taskRuntime 'logs/launcher-error.log')
-        $workerHandle = $worker.Handle
-        for ($attempt=0; $attempt -lt 90; $attempt++) {
-            $worker.Refresh()
-            if ($worker.HasExited -and $worker.ExitCode -ne 0) { throw '模型启动进程已退出，请查看 runtime/logs/server.log 和 launcher-error.log。' }
-            try {
-                $result = Invoke-RestMethod -Uri $health -Headers $headers -TimeoutSec 3
-                if ($result.service -eq 'xianqiji-forced-aligner' -and $result.ready -and $result.model -eq $value.model_name) {
-                    Write-Host "模型已就绪：$($result.model)"
-                    Write-Host "地址：http://127.0.0.1:$($value.port)/v1"
-                    Write-Host "请在播放器导入：$taskConnection"
-                    if (!$result.resource_ready) { Write-Host "当前等待资源：$($result.reason)" }
-                    exit 0
-                }
-            } catch { }
-            Start-Sleep -Seconds 3
-        }
-        throw '启动等待超时。查看 runtime/logs/server.log；不会继续启动第二份模型。'
+    if ($Action -eq 'Stop') {
+        $owned = Get-OwnedProcess
+        if (!$owned) { Write-Host '本目录的模型服务已停止。'; exit 0 }
+        try { $null = Invoke-RestMethod -Uri "http://127.0.0.1:$($value.port)/v1/shutdown" -Method Post -Headers $headers -Body '{}' -ContentType 'application/json' -TimeoutSec 2 } catch { }
+        $deadline = [datetime]::UtcNow.AddSeconds(6)
+        while ((Get-OwnedProcess) -and [datetime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200 }
+        $owned = Get-OwnedProcess
+        if ($owned) { Stop-Process -Id $owned.ProcessId -Force; Start-Sleep -Milliseconds 500 }
+        if (Get-OwnedProcess) { throw '模型进程未退出，请查看日志。' }
+        Write-Host '本目录模型已停止，模型及其音频解码子进程退出，显存释放。'
+        exit 0
     }
-    $result = Invoke-RestMethod -Uri $health -Headers $headers -TimeoutSec 5
-    Write-Host "模型：$($result.model)；就绪：$($result.ready)；可接任务：$($result.resource_ready)；活动歌曲：$($result.active)"
-    if ($result.reason) { Write-Host $result.reason }
-} catch {
-    Write-Host $_.Exception.Message -ForegroundColor Red
-    exit 1
-}
+    if ($Action -eq 'Status') {
+        $result = Invoke-RestMethod -Uri $health -Headers $headers -TimeoutSec 5
+        Write-Host "模型：$($result.model)；就绪：$($result.ready)；可接任务：$($result.resource_ready)；活动歌曲：$($result.active)"
+        if ($result.reason) { Write-Host $result.reason }; exit 0
+    }
+    if (!(Test-Path -LiteralPath $taskPython)) { throw '请先运行 01-首次准备.cmd，完成 Windows 原生环境安装。' }
+    New-Connection; Set-PrivateEnvironment
+    try { $taskLock = [IO.File]::Open((Join-Path $taskRuntime 'start.lock'), 'OpenOrCreate', 'ReadWrite', 'None') } catch { throw '启动脚本已在运行，请等待现有窗口的就绪提示。' }
+    try { $existing = Invoke-RestMethod -Uri $health -Headers $headers -TimeoutSec 2 } catch { $existing = $null }
+    if ($existing.service -eq 'xianqiji-forced-aligner' -and $existing.ready -and $existing.model -eq $value.model_name) { Write-Host '模型已经运行，不会重复加载。'; exit 0 }
+    if (Get-OwnedProcess) { throw '本目录的模型正在加载或退出，请查看日志或先运行停止模型。' }
+    $socket = New-Object Net.Sockets.TcpClient
+    try {
+        $connect = $socket.BeginConnect('127.0.0.1', [int]$value.port, $null, $null)
+        $occupied = $connect.AsyncWaitHandle.WaitOne(300) -and $socket.Connected
+    } catch { $occupied = $false } finally { $socket.Dispose() }
+    if ($occupied) { throw '端口已被其他服务占用，请修改 runtime/service.json 的端口。' }
+    $availableMB = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024
+    if ($availableMB -lt 12288) { throw 'Windows 可用内存不足 12GB，请关闭占用较多的软件后启动模型。' }
+    $gpu = & nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader,nounits
+    if ($LASTEXITCODE -ne 0) { throw '无法读取 NVIDIA 显存，请检查显卡驱动。' }
+    $parts = ($gpu | Select-Object -First 1) -split ','
+    if ($parts.Length -ne 2 -or [double]$parts[1] -lt ([double]$parts[0] * .30 + $value.min_free_gpu_mb)) { throw '当前空闲显存不足以加载模型并保留余量，请关闭其他 GPU 软件。' }
+    Write-Host '正在加载 Windows 原生 CUDA 模型，日志保存在 runtime/logs/server.log。'
+    $instance = [guid]::NewGuid().ToString('N')
+    $worker = Start-Process -FilePath $taskPython -ArgumentList @('-u',('"' + $taskServer + '"'),'--config',('"' + $taskConfig + '"'),'--instance',$instance) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $taskRuntime 'logs/server.log') -RedirectStandardError (Join-Path $taskRuntime 'logs/server-error.log')
+    $workerHandle = $worker.Handle
+    for ($attempt=0; $attempt -lt 90; $attempt++) {
+        $worker.Refresh()
+        if ($worker.HasExited) { throw '模型加载进程已退出，请查看 runtime/logs/server-error.log。' }
+        try {
+            $result = Invoke-RestMethod -Uri $health -Headers $headers -TimeoutSec 2
+            if ($result.service -eq 'xianqiji-forced-aligner' -and $result.ready -and $result.model -eq $value.model_name) {
+                Write-Host "模型已就绪：$($result.model)"
+                Write-Host "地址：http://127.0.0.1:$($value.port)/v1"
+                Write-Host "播放器导入：$taskConnection"
+                if (!$result.resource_ready) { Write-Host "当前等待资源：$($result.reason)" }
+                exit 0
+            }
+        } catch { }
+        Start-Sleep -Seconds 2
+    }
+    throw '启动等待超时，请查看 runtime/logs/server-error.log；不会启动第二份模型。'
+} catch { Write-Host $_.Exception.Message -ForegroundColor Red; exit 1 }
+finally { if ($taskLock) { $taskLock.Dispose() }; if ($taskTranscript) { Stop-Transcript | Out-Null } }

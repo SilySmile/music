@@ -1,4 +1,4 @@
-"""Local audio+reference-text API backed by bounded vLLM token classification."""
+"""Local audio+reference-text API using native Windows CUDA Transformers."""
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
@@ -12,39 +12,49 @@ import subprocess
 import tempfile
 import time
 
-from core import decode_predictions, linux_path, pressure_reason, validate_manifest
+from core import decode_predictions, pressure_reason, validate_manifest
 
 
-class VllmBackend:
+class TransformersBackend:
     def __init__(self, config):
         import torch
-        from vllm import LLM
-        from vllm.config import PoolerConfig
+        from qwen_asr import Qwen3ForcedAligner
+        if not torch.cuda.is_available():
+            raise RuntimeError("未检测到 CUDA，请运行首次准备并检查 NVIDIA 驱动")
         torch.set_num_threads(config.get("cpu_threads", 4))
+        torch.set_num_interop_threads(2)
+        free, total = torch.cuda.mem_get_info(0)
+        self.memory_fraction = min(config.get("gpu_memory_utilization", .45), (free - config.get("min_free_gpu_mb", 1536) * 1048576) / total)
+        if self.memory_fraction < .30:
+            raise RuntimeError("当前空闲显存不足以加载模型并为桌面保留余量，请关闭其他 GPU 软件")
+        torch.cuda.set_per_process_memory_fraction(self.memory_fraction, 0)
+        print(f"CUDA 分配器预算：{self.memory_fraction:.1%}，为桌面保留显存", flush=True)
         self.config = config
-        self.engine = LLM(
-            model=linux_path(config["model_path"]), runner="pooling", dtype="bfloat16",
-            hf_overrides={"architectures": ["Qwen3ASRForcedAlignerForTokenClassification"]},
-            pooler_config=PoolerConfig(task="token_classify", tok_pooling_type="STEP", step_tag_id=151705, use_activation=False),
-            enforce_eager=True, gpu_memory_utilization=config.get("gpu_memory_utilization", .45),
-            max_model_len=4096, max_num_batched_tokens=4096,
-            max_num_seqs=max(1, min(2, config.get("max_batch_size", 2))), limit_mm_per_prompt={"audio": 1},
-            enable_prefix_caching=False, max_parallel_loading_workers=1,
+        self.aligner = Qwen3ForcedAligner.from_pretrained(
+            config["model_path"], dtype=torch.bfloat16, device_map="cuda:0",
+            attn_implementation="sdpa", local_files_only=True, use_safetensors=True,
         )
-        metadata = json.loads((Path(linux_path(config["model_path"])) / "config.json").read_text())
-        self.segment_ms = metadata["timestamp_segment_time"]
+        self.aligner.model.eval()
+        self.segment_ms = self.aligner.timestamp_segment_time
 
     def align(self, jobs):
-        inputs = []
+        import torch
+        texts = []
         for job in jobs:
             body = "".join(unit + "<timestamp><timestamp>" for unit in job["line"]["units"])
-            inputs.append({"prompt": "<|audio_start|><|audio_pad|><|audio_end|>" + body, "multi_modal_data": {"audio": (job["audio"], 16000)}})
-        outputs = self.engine.encode(inputs, pooling_task="token_classify", use_tqdm=False)
+            texts.append("<|audio_start|><|audio_pad|><|audio_end|>" + body)
+        # Keep the player's original units and raw predictions. The official
+        # convenience align() normalizes text and repairs some invalid times;
+        # neither is suitable for strict source preservation and gap validation.
+        with torch.inference_mode():
+            inputs = self.aligner.processor(text=texts, audio=[job["audio"] for job in jobs], return_tensors="pt", padding=True)
+            inputs = inputs.to(self.aligner.model.device).to(self.aligner.model.dtype)
+            output_ids = self.aligner.model.thinker(**inputs).logits.argmax(dim=-1)
+            predictions = [output[input_id == self.aligner.timestamp_token_id].cpu().tolist() for input_id, output in zip(inputs["input_ids"], output_ids)]
         results = []
-        for job, output in zip(jobs, outputs):
+        for job, bins in zip(jobs, predictions):
             line = job["line"]
             try:
-                bins = output.outputs.data.argmax(dim=-1).tolist()
                 words = decode_predictions(line["units"], bins, self.segment_ms, line["start"], job["end"])
                 results.append({"id": line["id"], "text": line["text"], "words": words})
             except ValueError as error:
@@ -66,13 +76,15 @@ def resource_status(config):
 
 def read_audio(file, config):
     import numpy as np
-    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(file)], capture_output=True, text=True, timeout=15, check=True)
-    duration = float(probe.stdout.strip())
-    if not 0 < duration <= config.get("max_track_seconds", 1200):
-        raise ValueError("歌曲过长：默认支持 20 分钟以内；请拆分长录音")
-    # Both duration and decoded output are bounded before making numpy arrays.
-    result = subprocess.run(["ffmpeg", "-v", "error", "-threads", "2", "-i", str(file), "-t", str(config.get("max_track_seconds", 1200)), "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"], capture_output=True, timeout=90, check=True)
-    return np.frombuffer(result.stdout, dtype=np.float32)
+    from imageio_ffmpeg import get_ffmpeg_exe
+    limit = config.get("max_track_seconds", 1200)
+    # A bounded extra second detects overlong input without a separate ffprobe
+    # installation. The bundled Windows ffmpeg stays inside the private env.
+    result = subprocess.run([get_ffmpeg_exe(), "-nostdin", "-v", "error", "-threads", "2", "-i", str(file), "-t", str(limit + 1), "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"], capture_output=True, timeout=90, check=True, **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+    audio = np.frombuffer(result.stdout, dtype=np.float32)
+    if not 0 < len(audio) <= limit * 16000:
+        raise ValueError("音频为空或歌曲超过 20 分钟，请拆分长录音")
+    return audio
 
 
 def create_app(config, backend, monitor=None, idle_callback=None):
@@ -84,7 +96,7 @@ def create_app(config, backend, monitor=None, idle_callback=None):
     queue = asyncio.Queue(maxsize=16)
     slots = asyncio.Semaphore(max(1, min(2, config.get("max_concurrency", 2))))
     decoder = asyncio.Semaphore(1)
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bounded-vllm")
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bounded-aligner")
     state = {"active": 0, "last_used": time.monotonic(), "fatal": "", "pressure": "", "batch_size": max(1, min(2, config.get("max_batch_size", 2)))}
 
     async def worker():
@@ -162,6 +174,12 @@ def create_app(config, backend, monitor=None, idle_callback=None):
     async def models():
         return {"object": "list", "data": [{"id": config["model_name"], "object": "model"}]}
 
+    @app.post("/v1/shutdown")
+    async def shutdown():
+        if idle_callback:
+            idle_callback()
+        return {"stopping": True}
+
     @app.post("/v1/alignments")
     async def align(request: Request, file: UploadFile = File(...), model: str = Form(...), alignment: str = Form(...)):
         if slots.locked():
@@ -236,16 +254,20 @@ def create_app(config, backend, monitor=None, idle_callback=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument("--instance", required=True)
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
     if not isinstance(config.get("api_key"), str) or len(config["api_key"]) < 16:
         raise SystemExit("请先运行首次准备，生成本地密钥")
-    if not .2 <= config.get("gpu_memory_utilization", .45) <= .65:
-        raise SystemExit("显存占用比例须在 0.2–0.65 之间")
-    import uvicorn
-    backend = VllmBackend(config)
-    server = uvicorn.Server(uvicorn.Config(create_app(config, backend, idle_callback=lambda: setattr(server, "should_exit", True)), host="127.0.0.1", port=config.get("port", 8765), access_log=False, workers=1, limit_concurrency=8))
-    server.run()
+    if not .30 <= config.get("gpu_memory_utilization", .45) <= .65:
+        raise SystemExit("显存占用比例须在 0.30–0.65 之间")
+    from windows_runtime import owned_runtime
+    with owned_runtime(args.config, args.instance, config):
+        import uvicorn
+        backend = TransformersBackend(config)
+        print("CUDA 模型已加载，启动本机强对齐接口", flush=True)
+        server = uvicorn.Server(uvicorn.Config(create_app(config, backend, idle_callback=lambda: setattr(server, "should_exit", True)), host="127.0.0.1", port=config.get("port", 8765), access_log=False, workers=1, limit_concurrency=8))
+        server.run()
 
 
 if __name__ == "__main__":
