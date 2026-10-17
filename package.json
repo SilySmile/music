@@ -1,7 +1,7 @@
 {
   "name": "tingyu-music",
   "productName": "弦栖霁",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
   "type": "module",
   "description": "弦栖霁 · 本地音乐与离线双语歌词播放器",
@@ -12,7 +12,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "desktop": "npm run build && electron .",
-    "pack:win": "npm run build && electron-builder --win nsis portable --x64",
+    "pack:win": "npm run build && node scripts/package-desktop.cjs",
     "android:sync": "npm run build && cap sync android",
     "android:open": "cap open android",
     "demo": "node scripts/make-demo.mjs",
@@ -67,7 +67,10 @@
       "package.json"
     ],
     "win": {
-      "target": ["nsis", "portable"],
+      "target": [
+        "nsis",
+        "portable"
+      ],
       "icon": "build/icon.ico",
       "signExecutable": false
     },
@@ -78,7 +81,9 @@
       "allowToChangeInstallationDirectory": false,
       "deleteAppDataOnUninstall": false,
       "runAfterFinish": false,
-      "installerLanguages": ["zh_CN"],
+      "installerLanguages": [
+        "zh_CN"
+      ],
       "include": "build/installer.nsh",
       "artifactName": "Xianqiji-Setup-${version}-${arch}.${ext}"
     }

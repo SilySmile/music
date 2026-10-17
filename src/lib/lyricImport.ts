@@ -6,8 +6,8 @@ const translationSuffix = /[._ -](?:zh(?:-cn)?|cn|translated|translation|中文|
 function normalized(value: string) { return value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, ''); }
 
 export async function readLyricFile(file: File, tracks: Track[]): Promise<LyricFile> {
-  if (!/\.(lrc|txt)$/i.test(file.name)) throw new Error(`不支持的歌词格式：${file.name}`);
-  const stem = file.name.replace(/\.(lrc|txt)$/i, '');
+  if (!/\.(lrc|yrc|txt)$/i.test(file.name)) throw new Error(`不支持的歌词格式：${file.name}`);
+  const stem = file.name.replace(/\.(lrc|yrc|txt)$/i, '');
   const role = translationSuffix.test(stem) ? 'translation' : 'original';
   const title = normalized(stem.replace(translationSuffix, ''));
   const exact = tracks.filter((track) => [track.title, `${track.artist}${track.title}`, `${track.title}${track.artist}`].some((value) => normalized(value) === title));
@@ -34,7 +34,7 @@ export function lyricPatches(files: LyricFile[], tracks: Track[]): { trackId: st
     }) : track.lyrics.map((line) => ({ ...line }));
     if (!lyrics.length) throw new Error(`「${track.title}」尚无原文，请先导入原文歌词，或把文件用途改为原文。`);
     if (translation) {
-      const merged = mergeTranslation(lyrics.map((line) => ({ time: line.time, text: line.text })), translation.lines);
+      const merged = mergeTranslation(lyrics.map((line) => ({ ...line, translation: undefined })), translation.lines);
       const matched = merged.filter((line) => line.translation).length;
       if (!matched) throw new Error(`「${track.title}」译文时间轴未匹配，请检查是否为同一版本的歌词。`);
       lyrics = merged.map((line, index) => ({ ...line, translation: line.translation || lyrics[index].translation }));

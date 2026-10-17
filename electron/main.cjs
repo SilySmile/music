@@ -1,5 +1,6 @@
 const { app, BrowserWindow, session, ipcMain, screen, net, globalShortcut, safeStorage, dialog, shell, Tray, nativeImage, protocol } = require('electron');
 const path = require('node:path');
+const { timedWords } = require('./lyric-timing.cjs');
 const fs = require('node:fs/promises');
 
 app.setAppUserModelId('com.tingyu.music');
@@ -214,6 +215,9 @@ async function readJson(response) {
 }
 
 function installIpc() {
+  const audioAI = require('./audio-alignment.cjs')({ fetch: (...args) => net.fetch(...args) });
+  ipcMain.handle('network:audio-ai', async (event, request) => { requireWindow(event, true); return audioAI.request(request); });
+  ipcMain.handle('network:cancel-audio-ai', (event, id) => { requireWindow(event, true); audioAI.cancel(id); });
   require('./update-ipc.cjs')({ app, ipcMain, net, requireWindow, getWindow: () => mainWindow, shell, testing });
   require('./library-ipc.cjs')({ app, ipcMain, dialog, shell, requireWindow, getWindow: () => mainWindow });
   require('./transfers.cjs')({ app, ipcMain, dialog, shell, requireWindow, getWindow: () => mainWindow, testing });
@@ -301,7 +305,7 @@ function installIpc() {
     if (!value || typeof value !== 'object') return;
     const text = (key, maximum) => typeof value[key] === 'string' ? value[key].slice(0, maximum) : '';
     const number = (key) => Number.isFinite(value[key]) ? Math.max(0, value[key]) : 0;
-    snapshot = { title: text('title', 300), artist: text('artist', 300), text: text('text', 2000), translation: text('translation', 2000), nextText: text('nextText', 2000), previousText: text('previousText', 2000), lineIndex: Math.floor(number('lineIndex')), lineStart: number('lineStart'), lineEnd: number('lineEnd'), position: number('position'), duration: number('duration'), playing: value.playing === true, showTranslation: value.showTranslation === true, favorite: value.favorite === true, volume: Math.min(1, number('volume')), mode: ['list', 'shuffle', 'one'].includes(value.mode) ? value.mode : 'list', hasTrack: value.hasTrack === true };
+    snapshot = { title: text('title', 300), artist: text('artist', 300), text: text('text', 2000), translation: text('translation', 2000), nextText: text('nextText', 2000), previousText: text('previousText', 2000), lineIndex: Math.floor(number('lineIndex')), lineStart: number('lineStart'), lineEnd: number('lineEnd'), words: timedWords({ time: number('lineStart'), text: text('text', 2000), words: value.words })?.map(({time, endTime, text}) => ({time, endTime, text})), advancing: value.advancing === true, playbackRate: Math.max(0.25, Math.min(4, Number(value.playbackRate) || 1)), position: number('position'), duration: number('duration'), playing: value.playing === true, showTranslation: value.showTranslation === true, favorite: value.favorite === true, volume: Math.min(1, number('volume')), mode: ['list', 'shuffle', 'one'].includes(value.mode) ? value.mode : 'list', hasTrack: value.hasTrack === true };
     for (const window of [desktopWindow, trayMenuWindow]) if (window && !window.isDestroyed()) window.webContents.send('desktop:snapshot', snapshot);
   });
   ipcMain.on('desktop:control', (event, action) => {

@@ -31,13 +31,13 @@ export default function LyricImportDialog({ files, tracks, onSave, onClose }: { 
   }
   return <div className="modal-backdrop"><section className="modal lyric-import-modal" role="dialog" aria-modal="true" aria-labelledby="lyric-import-title">
     <div className="modal-heading"><div><span className="eyebrow">LOCAL LYRICS</span><h2 id="lyric-import-title">单独导入歌词</h2></div><button className="icon-button" aria-label="关闭歌词导入" disabled={saving} onClick={onClose}><X size={20} /></button></div>
-    <p className="field-help">不重复导入音频。确认对应歌曲和文件用途后保存；同名且唯一的歌曲会自动匹配，同名多版本请手动选择。新原文保留相同文本已有的译文，新中文优先覆盖匹配行。</p>
+    <p className="field-help">不重复导入音频。确认对应歌曲和文件用途后保存；同名且唯一的歌曲会自动匹配，同名多版本请手动选择。新原文保留相同文本已有的译文，新中文优先覆盖匹配行。支持含逐字时间戳的增强 LRC 和 YRC；普通 LRC 只能同步到句，无法自动确定每个字何时唱出。</p>
     {!tracks.length && <p role="alert">请先导入歌曲音频，再为它添加歌词。</p>}
     {loading ? <p><LoaderCircle className="spin" size={16} />正在读取歌词…</p> : entries.map((entry, index) => <article className="lyric-import-file" key={`${index}-${entry.name}`}>
       <h3><FileText size={16} />{entry.name}</h3>
       <div className="lyric-import-fields"><label>对应歌曲<select aria-label={`对应歌曲 ${entry.name}`} disabled={saving || saved.includes(entry.trackId)} value={entry.trackId} onChange={(event) => change(index, { trackId: event.target.value })}><option value="">请选择歌曲</option>{tracks.map((track) => <option key={track.id} value={track.id}>{track.title} · {track.artist} · {track.album || '未知专辑'} · {Math.floor(track.duration)} 秒 · {track.id.slice(0, 6)}</option>)}</select></label>
       <label>文件用途<select aria-label={`文件用途 ${entry.name}`} disabled={saving || saved.includes(entry.trackId)} value={entry.role} onChange={(event) => change(index, { role: event.target.value as LyricFile['role'] })}><option value="original">原文歌词（可含双语）</option><option value="translation">中文译文</option></select></label></div>
-      <p className="field-help">{entry.lines.length} 行 · {entry.lines.some((line) => line.time >= 0) ? '带时间轴，可同步滚动' : '纯文本，仅供阅读'}{saved.includes(entry.trackId) ? ' · 已保存' : ''}</p>
+      <p className="field-help">{entry.lines.length} 行 · {entry.lines.some((line) => line.words?.length) ? '逐字时间轴，可跟唱高亮' : entry.lines.some((line) => line.time >= 0) ? '逐句时间轴，整句高亮' : '纯文本，仅供阅读'}{saved.includes(entry.trackId) ? ' · 已保存' : ''}</p>
       <pre className="lyric-import-preview">{entry.lines.slice(0, 4).map((line) => `${line.text}${line.translation ? `\n${line.translation}` : ''}`).join('\n')}</pre>
       <button className="text-button" disabled={saving || saved.includes(entry.trackId)} onClick={() => setEntries((previous) => previous.filter((_, current) => current !== index))}>移除此文件</button>
     </article>)}

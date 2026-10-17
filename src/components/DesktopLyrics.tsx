@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Columns2, Disc3, GripVertical, Languages, Lock, Minus, Palette, Pause, Play, Plus, Settings2, SkipBack, SkipForward, Unlock, X } from 'lucide-react';
 import type { DesktopHitRegion, DesktopSnapshot, DesktopState } from '../types';
 import { desktopContent, desktopLineGap } from '../lib/desktopLyrics';
+import { extrapolateLyricPosition, timedWords } from '../lib/lyricTiming';
+import TimedLyricText from './TimedLyricText';
 
 const themes: DesktopState['theme'][] = ['gold', 'cyan', 'green', 'coral'];
 
@@ -25,7 +27,7 @@ export default function DesktopLyrics() {
     const unsubscribeSnapshot = bridge.onSnapshot(receive);
     const unsubscribeState = bridge.onState(setStyle);
     const unsubscribePointer = bridge.onPointer(setHovered);
-    const timer = setInterval(() => setNow(performance.now()), 100);
+    const timer = setInterval(() => setNow(performance.now()), 25);
     return () => { clearInterval(timer); unsubscribeSnapshot(); unsubscribeState(); unsubscribePointer(); document.documentElement.classList.remove('desktop-lyrics-document'); };
   }, []);
 
@@ -46,12 +48,10 @@ export default function DesktopLyrics() {
     return () => { cancelAnimationFrame(frame); observer.disconnect(); bridge.setHitRegions([]); };
   }, [style.locked, style.layout, toolsOpen]);
 
-  const elapsed = snapshot?.playing ? Math.max(0, now - clock.received) / 1000 : 0;
-  const position = clock.position + elapsed;
-  const progress = snapshot && snapshot.lineEnd > snapshot.lineStart ? Math.max(0, Math.min(100, (position - snapshot.lineStart) / (snapshot.lineEnd - snapshot.lineStart) * 100)) : 0;
+  const position = extrapolateLyricPosition(clock.position, now - clock.received, !!snapshot?.playing && (snapshot.advancing ?? true), snapshot?.playbackRate);
+  const words = snapshot ? timedWords({ time: snapshot.lineStart, text: snapshot.text, words: snapshot.words }) : undefined;
   const { paired, secondaryActive, primary, secondary } = desktopContent(snapshot, style.verticalContent);
   const gap = paired ? desktopLineGap(style.fontSize, style.lineGap) : Math.max(3, Math.min(7, style.fontSize * .16));
-  const highlightStyle = { clipPath: style.layout === 'vertical' ? `inset(0 0 ${100 - progress}% 0)` : `inset(0 ${100 - progress}% 0 0)` };
 
   useLayoutEffect(() => {
     const container = surface.current?.querySelector<HTMLElement>('.desktop-lyric-lines');
@@ -91,6 +91,6 @@ export default function DesktopLyrics() {
       <button aria-label="桌面歌词设置" title="桌面歌词设置" onClick={() => window.tingyuDesktop?.control('settings')}><Settings2 size={15} /><span>完整设置</span></button>
     </div>}
     {style.locked && <button className="desktop-unlock" data-desktop-interactive="unlock" aria-label="解锁桌面歌词" title="解锁桌面歌词（Ctrl+Alt+L）" onClick={() => void window.tingyuDesktop?.setLocked(false)}><Unlock size={15} /><span>解锁</span></button>}
-    <div className="desktop-lyric-lines"><div className="desktop-lyric-pair" style={{ transform: `scale(${scale})` }}><div className={`desktop-primary-line ${!secondaryActive ? 'is-current' : ''}`} title={primary}><span className="desktop-text-base">{primary}</span>{!secondaryActive && <span className="desktop-text-highlight" aria-hidden="true" style={highlightStyle}>{primary}</span>}</div><div className={`desktop-secondary-line ${secondaryActive ? 'is-current' : ''}`} title={secondary}><span className="desktop-text-base">{secondary}</span>{secondaryActive && <span className="desktop-text-highlight" aria-hidden="true" style={highlightStyle}>{secondary}</span>}</div></div></div>
+    <div className="desktop-lyric-lines"><div className="desktop-lyric-pair" style={{ transform: `scale(${scale})` }}><div className={`desktop-primary-line ${!secondaryActive ? 'is-current' : ''}`} title={primary}><TimedLyricText className="desktop-text-base" text={primary} words={!secondaryActive ? words : undefined} active={!secondaryActive && !!snapshot?.text} position={position} vertical={style.layout === 'vertical'} /></div><div className={`desktop-secondary-line ${secondaryActive ? 'is-current' : ''}`} title={secondary}><TimedLyricText className="desktop-text-base" text={secondary} words={secondaryActive ? words : undefined} active={secondaryActive} position={position} vertical={style.layout === 'vertical'} /></div></div></div>
   </main>;
 }

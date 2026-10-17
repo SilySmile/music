@@ -3,8 +3,20 @@ import JSZip from 'jszip';
 import { describe, expect, it } from 'vitest';
 import { createMusicArchive, safeFilename } from './exporter';
 import { importFiles } from './importer';
+import { parseLyrics } from './lyrics';
 
 describe('portable music archive', () => {
+  it('retains word timing and pauses in both metadata and standalone LRC', async () => {
+    const demo = await fs.readFile('public/demo/弦栖霁示例.zip');
+    const { tracks } = await importFiles([new File([demo], 'demo.zip')], () => {});
+    tracks[0].lyrics = parseLyrics('[1000,4000](1000,500,0)Snow (3000,2000,0)falls');
+    const bytes = await createMusicArchive([tracks[0]], () => {});
+    const restored = await importFiles([new File([bytes], 'word-timing.zip')], () => {});
+    expect(restored.tracks[0].lyrics).toEqual(tracks[0].lyrics);
+    const zip = await JSZip.loadAsync(bytes);
+    const file = Object.keys(zip.files).find((name) => name.endsWith('.lrc'))!;
+    expect(parseLyrics(await zip.file(file)!.async('string'))).toEqual(tracks[0].lyrics);
+  });
   it('round trips original audio, metadata, favorites, artwork and sparse bilingual lyrics', async () => {
     const demo = await fs.readFile('public/demo/弦栖霁示例.zip');
     const imported = await importFiles([new File([demo], 'demo.zip')], () => {});

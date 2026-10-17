@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const createLibrary = createRequire(import.meta.url)('../../electron/library.cjs');
+import { parseLyrics } from './lyrics';
 const directories: string[] = [];
 async function fixture(options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xianqiji-library-test-'));
@@ -31,6 +32,16 @@ afterEach(async () => {
 });
 
 describe('ordinary-file music library', () => {
+  it('keeps genuine word timestamps in files and restores them on restart', async () => {
+    const { library, userData } = await fixture();
+    await put(library);
+    const lyrics = parseLyrics('[1000,4000](1000,500,0)Soft (3000,2000,0)light');
+    await library.patch(metadata.id, { lyrics });
+    const info = await library.info();
+    const file = await fs.readFile(path.join(info.path, '歌曲', metadata.id, 'Demo - Quiet Room.lrc'), 'utf8');
+    expect(parseLyrics(file)).toEqual(lyrics);
+    expect((await createLibrary({ userData }).list())[0].metadata.lyrics).toEqual(lyrics);
+  });
   it('writes real audio, matching timed source / Chinese files and metadata, preserving edits after restart', async () => {
     const { library, userData } = await fixture();
     await put(library);

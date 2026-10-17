@@ -4,6 +4,15 @@ import { lyricPatches, readLyricFile } from './lyricImport';
 
 const track: Track = { id: 'track-1', title: 'Snow Light', artist: 'Demo', album: 'Winter', duration: 36, format: 'wav', audio: new Blob(['audio']), lyrics: [{ time: 1, text: 'Snow falls', translation: '旧中文' }], favorite: true, addedAt: 1 };
 describe('separate lyrics import', () => {
+  it('replaces line lyrics with YRC word timing and retains it when adding Chinese', async () => {
+    const original = await readLyricFile(new File(['[1000,4000](1000,500,0)Snow (3000,2000,0)falls'], 'Snow Light.yrc'), [track]);
+    const translation = await readLyricFile(new File(['[00:01]雪落下'], 'Snow Light.zh.lrc'), [track]);
+    const lyrics = lyricPatches([original, translation], [track])[0].patch.lyrics!;
+    expect(lyrics[0].words).toEqual(original.lines[0].words);
+    expect(lyrics[0].translation).toBe('雪落下');
+    const updated = { ...track, lyrics };
+    expect(lyricPatches([translation], [updated])[0].patch.lyrics?.[0].words).toEqual(original.lines[0].words);
+  });
   it('auto matches unique artist-title and identifies Chinese suffix without touching audio', async () => {
     const original = await readLyricFile(new File(['[00:01]Snow falls\n[00:03]Stay here'], 'Demo - Snow Light.lrc'), [track]);
     const translation = await readLyricFile(new File(['[00:01]雪落下\n[00:03]留在这里'], 'Snow Light.zh.lrc'), [track]);

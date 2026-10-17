@@ -2,6 +2,7 @@ const fs = require('node:fs/promises');
 const { createReadStream, constants } = require('node:fs');
 const { createHash, randomUUID } = require('node:crypto');
 const path = require('node:path');
+const { timedWords, timestamp, enhancedText } = require('./lyric-timing.cjs');
 
 const format = 'xianqiji-library-folder';
 const chunkSize = 4 * 1024 * 1024;
@@ -25,9 +26,10 @@ async function atomicJSON(file, value) {
 function lyricsText(lines, translated) {
   const timed = lines.some((line) => line.time >= 0);
   return lines.map((line) => {
-    const text = translated ? line.translation || '' : line.text;
+    const text = translated ? line.translation || '' : enhancedText(line);
     if (!text) return timed ? '' : ' ';
     if (line.time < 0) return text;
+    if (timedWords(line)) return `[${timestamp(line.time)}]${text}`;
     const value = Math.round(line.time * 100);
     return `[${String(Math.floor(value / 6000)).padStart(2, '0')}:${String(Math.floor(value / 100 % 60)).padStart(2, '0')}.${String(value % 100).padStart(2, '0')}]${text}`;
   }).filter((line) => line !== '').join('\n');

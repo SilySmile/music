@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { version as appVersion } from '../package.json';
 import { ArrowRight, Check, ChevronDown, Disc3, Download, FolderHeart, FolderInput, Globe2, Headphones, Heart, Info, Library, ListMusic, LoaderCircle, Lock, Maximize2, Monitor, Music2, Pause, Play, Repeat, Repeat1, Search, Settings2, Shuffle, SkipBack, SkipForward, Trash2, Unlock, Upload, Volume2, VolumeX, X } from 'lucide-react';
 import type { AIConfig, DesktopState, LibraryView, Track } from './types';
 import { getTracks, getTransfers, patchTrack } from './lib/storage';
@@ -7,6 +8,9 @@ import type { ImportTask } from './lib/transferTypes';
 import TransferCenter from './components/TransferCenter';
 import SeasonAtmosphere, { seasonLabels, type SeasonChoice } from './components/SeasonAtmosphere';
 import { activeLyricIndex } from './lib/lyrics';
+import { useAutomaticAlignment } from './lib/useAutomaticAlignment';
+import { timedWords } from './lib/lyricTiming';
+import TimedLyricText from './components/TimedLyricText';
 import DesktopSettings from './components/DesktopSettings';
 import CloseSettings from './components/CloseSettings';
 import StorageSettings from './components/StorageSettings';
@@ -69,6 +73,7 @@ export default function App() {
   const [listPage, setListPage] = useState(0);
   const [currentId, setCurrentId] = useState('');
   const [playing, setPlaying] = useState(false);
+  const [audioAdvancing, setAudioAdvancing] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(() => Number(localStorage.getItem('tingyu-volume') ?? '0.7'));
@@ -78,6 +83,7 @@ export default function App() {
   const [now, setNow] = useState(Date.now);
   const [nativeActive, setNativeActive] = useState(false);
   const [nativeProgress, setNativeProgress] = useState('');
+  const [alignmentBusy, setAlignmentBusy] = useState(false);
   const nativeActiveRef = useRef(false);
   const nativePreparing = useRef(false);
   const nativeAutoAttempt = useRef(false);
@@ -108,7 +114,7 @@ export default function App() {
   const [aiConfig, setAIConfig] = useState<AIConfig>(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('tingyu-ai-config') || '{}');
-      return { url: typeof stored.url === 'string' ? stored.url : defaultAIConfig.url, model: typeof stored.model === 'string' ? stored.model : defaultAIConfig.model, key: '' };
+      return { url: typeof stored.url === 'string' ? stored.url : defaultAIConfig.url, model: typeof stored.model === 'string' ? stored.model : defaultAIConfig.model, audioModel: typeof stored.audioModel === 'string' ? stored.audioModel : 'whisper-1', autoAlign: typeof stored.autoAlign === 'boolean' ? stored.autoAlign : undefined, key: '' };
     } catch { return { ...defaultAIConfig }; }
   });
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -124,7 +130,7 @@ export default function App() {
   const librarySwitching = useRef(false);
   const importController = useRef<AbortController | null>(null);
   const messageTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const sourceAuto = useSourceAutoSync(storedTracks, ready, !!busy || !!storageProgress || !!nativeProgress || cloud.caching);
+  const sourceAuto = useSourceAutoSync(storedTracks, ready, !!busy || !!storageProgress || !!nativeProgress || cloud.caching || alignmentBusy);
   const current = tracks.find((track) => track.id === currentId);
   nativeView.current = { tracks, currentId, queue, mode, volume, fadeDuration, playing };
   const audioUrl = useBlobUrl(current?.audio);
@@ -283,6 +289,8 @@ export default function App() {
     } catch { notify('保存失败，歌曲可能已移除或设备空间不足。'); return false; }
   }, [notify, tracks, cloud.patch]);
 
+  const automaticAlignment = useAutomaticAlignment(storedTracks, ready, aiConfig, !!busy || !!storageProgress || !!nativeProgress || cloud.caching || sourceAuto.state.running || modal === 'online' || modal === 'lyrics', updateTrack, setAlignmentBusy);
+
   const playTrack = useCallback((track: Track, nextQueue?: string[]): void => {
     if (librarySwitching.current) return;
     const intent = ++playIntent.current;
@@ -372,6 +380,17 @@ export default function App() {
   }, [duration, nativeControl]);
 
   useEffect(() => {
+    if (nativeActive || !playing) return;
+    // Sample the actual audio clock, including seeks/stalls; timeupdate alone
+    // can arrive only a few times a second and visibly lags short syllables.
+    const timer = setInterval(() => {
+      const audio = audioRef.current;
+      if (audio && !nativeActiveRef.current) setPosition(audio.currentTime);
+    }, 40);
+    return () => clearInterval(timer);
+  }, [playing, nativeActive]);
+
+  useEffect(() => {
     const bridge = window.tingyuDesktop;
     if (!bridge) return;
     void bridge.getState().then(setDesktopState).catch(() => notify('桌面歌词状态读取失败。'));
@@ -384,8 +403,8 @@ export default function App() {
     const line = current?.lyrics[activeLine];
     const next = current?.lyrics[activeLine + 1];
     const previous = current?.lyrics[activeLine - 1];
-    bridge.updateSnapshot({ title: current?.title ?? '', artist: current?.artist ?? '', text: line?.text ?? '', translation: line?.translation ?? '', nextText: next?.text ?? (current?.lyrics.length && !current.lyrics.some((item) => item.time >= 0) ? '纯文本歌词，请在详情页阅读' : ''), previousText: previous?.text ?? '', lineIndex: Math.max(0, activeLine), lineStart: Math.max(0, line?.time ?? 0), lineEnd: next && next.time >= 0 ? next.time : duration, position, duration, playing, showTranslation, favorite: current?.favorite ?? false, hasTrack: !!current, volume, mode });
-  }, [current, activeLine, position, duration, playing, showTranslation, volume, mode]);
+    bridge.updateSnapshot({ title: current?.title ?? '', artist: current?.artist ?? '', text: line?.text ?? '', translation: line?.translation ?? '', nextText: next?.text ?? (current?.lyrics.length && !current.lyrics.some((item) => item.time >= 0) ? '纯文本歌词，请在详情页阅读' : ''), previousText: previous?.text ?? '', lineIndex: Math.max(0, activeLine), lineStart: Math.max(0, line?.time ?? 0), lineEnd: next && next.time >= 0 ? next.time : duration, words: line ? timedWords(line) : undefined, advancing: nativeActive ? playing : audioAdvancing, playbackRate: audioRef.current?.playbackRate ?? 1, position, duration, playing, showTranslation, favorite: current?.favorite ?? false, hasTrack: !!current, volume, mode });
+  }, [current, activeLine, position, duration, playing, audioAdvancing, nativeActive, showTranslation, volume, mode]);
 
   useEffect(() => window.tingyuDesktop?.onControl((action) => {
     if (action === 'play-pause') togglePlay();
@@ -407,6 +426,7 @@ export default function App() {
     const { key: _key, ...preferences } = config;
     localStorage.setItem('tingyu-ai-config', JSON.stringify(preferences));
     setAIConfig(config);
+    window.dispatchEvent(new Event('xianqiji-ai-config-changed'));
   }
 
   useEffect(() => {
@@ -466,7 +486,7 @@ export default function App() {
   async function handleImport(files: File[], resumeTask?: ImportTask) {
     if (!files.length || importLock.current || sourceTransferring.current) return;
     if (cloud.caching) { notify('正在缓存到当前音乐库，请稍后导入，或先点击“停止缓存”。'); return; }
-    if (!resumeTask && files.every((file) => /\.(lrc|txt)$/i.test(file.name))) {
+    if (!resumeTask && files.every((file) => /\.(lrc|yrc|txt)$/i.test(file.name))) {
       setLyricFiles(files); setModal('lyrics');
       if (inputRef.current) inputRef.current.value = '';
       return;
@@ -506,18 +526,18 @@ export default function App() {
     {current?.lyrics.length ? <>
       <div className="lyric-top-space" />
       {current.lyrics.map((line, index) => <button key={`${line.time}-${index}`} className={`lyric-line ${index === activeLine ? 'active' : ''}`} data-active={index === activeLine} onClick={() => { if (line.time >= 0) seek(line.time); }} disabled={line.time < 0}>
-        <span>{line.text}</span>{showTranslation && line.translation && <small>{line.translation}</small>}
+        <TimedLyricText text={line.text} words={timedWords(line)} position={position} active={index === activeLine} />{showTranslation && line.translation && <small>{line.translation}</small>}
       </button>)}
       <div className="lyric-top-space" />
     </> : <div className="lyric-empty"><Disc3 size={36} /><p>{current ? '这首歌还没有歌词' : '每一首歌，都有回响'}</p><small>{current ? '导入同名 LRC，字句随音乐流动' : '选一首喜欢的，开始聆听'}</small></div>}
   </div>;
 
   return <div className="app" onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }} onDrop={(event) => { event.preventDefault(); setDragging(false); void handleImport(Array.from(event.dataTransfer.files)); }}>
-    <input ref={inputRef} className="hidden-input" type="file" multiple accept=".zip,.mp3,.flac,.wav,.m4a,.aac,.ogg,.opus,.lrc,.txt,.jpg,.jpeg,.png,.webp" aria-label="选择音乐压缩包或歌曲文件" onChange={(event) => void handleImport(Array.from(event.target.files ?? []))} />
+    <input ref={inputRef} className="hidden-input" type="file" multiple accept=".zip,.mp3,.flac,.wav,.m4a,.aac,.ogg,.opus,.lrc,.yrc,.txt,.jpg,.jpeg,.png,.webp" aria-label="选择音乐压缩包或歌曲文件" onChange={(event) => void handleImport(Array.from(event.target.files ?? []))} />
     <input ref={audioInputRef} className="hidden-input" type="file" multiple accept=".mp3,.flac,.wav,.m4a,.aac,.ogg,.opus" aria-label="选择单独音频文件" onChange={(event) => void handleImport(Array.from(event.target.files ?? []))} />
-    <input ref={lyricInputRef} className="hidden-input" type="file" multiple accept=".lrc,.txt" aria-label="选择单独歌词文件" onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) { setLyricFiles(files); setModal('lyrics'); } event.target.value = ''; }} />
-    <audio ref={audioRef} preload="metadata" onPlay={() => { if (!nativeActiveRef.current) setPlaying(true); }} onPause={() => { if (!nativeActiveRef.current) setPlaying(false); }} onTimeUpdate={(event) => { if (!nativeActiveRef.current) { setPosition(event.currentTarget.currentTime); checkSleep(); } }} onLoadedMetadata={(event) => { if (nativeActiveRef.current) return; const nextDuration = event.currentTarget.duration; setDuration(Number.isFinite(nextDuration) ? nextDuration : 0); }} onEnded={() => { if (nativeActiveRef.current || sleepStopped.current) return; if (sleepRef.current && Date.now() >= sleepRef.current.deadline) { fadeRef.current?.pause(true); clearSleep(); notify('睡眠定时已结束，音乐已停止。'); return; } if (mode === 'one' && audioRef.current) { audioRef.current.currentTime = 0; beginPlayback(); } else stepTrack(1); }} onError={() => { if (!nativeActiveRef.current && audioRef.current?.getAttribute('src')) notify('音频解码失败。请尝试 MP3 / WAV 格式，或检查原文件是否完整。'); }} />
-    <StartupScreen ready={ready} />{cloud.message && cloud.caching && <div className="cloud-cache-banner" role="status">{cloud.message}<button onClick={cloud.stop}>停止缓存</button></div>}{sourceAuto.state.running && modal !== 'settings' && <div className="source-auto-banner" role="status">{sourceAuto.state.message}</div>}{nativeProgress && <div className="native-playback-progress" role="status">{nativeProgress}<small>准备完成后才启用锁屏连播；额外保存一份校验过的原音频，会占用相应空间。</small></div>}<aside className="sidebar">
+    <input ref={lyricInputRef} className="hidden-input" type="file" multiple accept=".lrc,.yrc,.txt" aria-label="选择单独歌词文件" onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) { setLyricFiles(files); setModal('lyrics'); } event.target.value = ''; }} />
+    <audio ref={audioRef} preload="metadata" onPlay={() => { if (!nativeActiveRef.current) setPlaying(true); }} onPause={() => { setAudioAdvancing(false); if (!nativeActiveRef.current) setPlaying(false); }} onPlaying={() => setAudioAdvancing(true)} onWaiting={() => setAudioAdvancing(false)} onSeeking={() => setAudioAdvancing(false)} onSeeked={(event) => { setPosition(event.currentTarget.currentTime); setAudioAdvancing(!event.currentTarget.paused && event.currentTarget.readyState >= 3); }} onTimeUpdate={(event) => { if (!nativeActiveRef.current) { setPosition(event.currentTarget.currentTime); checkSleep(); } }} onLoadedMetadata={(event) => { if (nativeActiveRef.current) return; const nextDuration = event.currentTarget.duration; setDuration(Number.isFinite(nextDuration) ? nextDuration : 0); }} onEnded={() => { if (nativeActiveRef.current || sleepStopped.current) return; if (sleepRef.current && Date.now() >= sleepRef.current.deadline) { fadeRef.current?.pause(true); clearSleep(); notify('睡眠定时已结束，音乐已停止。'); return; } if (mode === 'one' && audioRef.current) { audioRef.current.currentTime = 0; beginPlayback(); } else stepTrack(1); }} onError={() => { if (!nativeActiveRef.current && audioRef.current?.getAttribute('src')) notify('音频解码失败。请尝试 MP3 / WAV 格式，或检查原文件是否完整。'); }} />
+    <StartupScreen ready={ready} />{aiConfig.autoAlign && (alignmentBusy || automaticAlignment.state.failed > 0 || automaticAlignment.state.partial > 0) && modal !== 'settings' && <div className="source-auto-banner" role="status">{automaticAlignment.state.message}{alignmentBusy ? <button onClick={automaticAlignment.pause}>暂停生成</button> : <button onClick={() => setModal('settings')}>查看 AI 配置</button>}</div>}{cloud.message && cloud.caching && <div className="cloud-cache-banner" role="status">{cloud.message}<button onClick={cloud.stop}>停止缓存</button></div>}{sourceAuto.state.running && modal !== 'settings' && <div className="source-auto-banner" role="status">{sourceAuto.state.message}</div>}{nativeProgress && <div className="native-playback-progress" role="status">{nativeProgress}<small>准备完成后才启用锁屏连播；额外保存一份校验过的原音频，会占用相应空间。</small></div>}<aside className="sidebar">
       <a className="brand" href="#" onClick={(event) => { event.preventDefault(); setView('all'); setSearch(''); }} aria-label="弦栖霁首页"><span className="brand-symbol"><Headphones size={23} /></span><span>弦栖霁<span className="brand-en">XIANQIJI</span></span><span className="brand-dot">●</span></a>
       <div className="nav-label">你的音乐世界</div>
       <nav aria-label="音乐导航">
@@ -531,7 +551,7 @@ export default function App() {
       <button className="side-link" onClick={() => setModal('export')}><Download size={19} />导出音乐</button>
       <button className="side-link" onClick={() => setModal('transfers')}><FolderInput size={19} />传输任务</button>
       <button className="side-link" onClick={() => setModal('settings')}><Settings2 size={19} />偏好设置</button>
-      <div className="sidebar-bottom"><div className="offline-card"><span className="online-dot" />本地聆听 · 联网补全<small>你的音乐，随身带走。</small></div><div className="version">XIANQIJI MUSIC <span>v1.0.1</span></div></div>
+      <div className="sidebar-bottom"><div className="offline-card"><span className="online-dot" />本地聆听 · 联网补全<small>你的音乐，随身带走。</small></div><div className="version">XIANQIJI MUSIC <span>v{appVersion}</span></div></div>
     </aside>
 
     <main className="main">
@@ -568,13 +588,13 @@ export default function App() {
 
     {fullLyrics && <div className="full-lyrics" role="dialog" aria-modal="true" aria-label="完整歌词">
       <div className="detail-toolbar"><button className="button outline close-full" onClick={() => setFullLyrics(false)}><ChevronDown size={19} />返回音乐库</button><div><button className="button outline" disabled={!current} onClick={() => setModal('online')}><Globe2 size={15} />联网补全</button>{desktopState && <button className={`button outline ${desktopState.visible ? 'enabled' : ''}`} aria-pressed={desktopState.visible} onClick={() => void window.tingyuDesktop?.setVisible(!desktopState.visible).catch(() => notify('桌面歌词无法打开。'))}><Monitor size={15} />桌面歌词{desktopState.visible ? '已开启' : ''}</button>}{desktopState?.visible && <button className="icon-button" aria-label={desktopState.locked ? '解锁桌面歌词' : '锁定桌面歌词'} onClick={() => void window.tingyuDesktop?.setLocked(!desktopState.locked)}>{desktopState.locked ? <Unlock size={15} /> : <Lock size={15} />}</button>}</div></div>
-      <div className="full-lyrics-layout"><div className="full-art"><Artwork track={current} /><h2>{current?.title ?? '让音乐陪你一会儿'}</h2><p>{current?.artist ?? '弦栖霁'}</p><button className={`button outline ${showTranslation ? 'enabled' : ''}`} aria-pressed={showTranslation} onClick={() => setShowTranslation(!showTranslation)}>{showTranslation ? <Check size={16} /> : <Music2 size={16} />}中文译文{showTranslation ? '已开启' : '已关闭'}</button><small className="lyric-source">{[current?.lyricsSource, current?.translationSource].filter(Boolean).join(' · ')}</small></div>{renderLyrics(true)}</div>
+      <div className="full-lyrics-layout"><div className="full-art"><Artwork track={current} /><h2>{current?.title ?? '让音乐陪你一会儿'}</h2><p>{current?.artist ?? '弦栖霁'}</p><button className={`button outline ${showTranslation ? 'enabled' : ''}`} aria-pressed={showTranslation} onClick={() => setShowTranslation(!showTranslation)}>{showTranslation ? <Check size={16} /> : <Music2 size={16} />}中文译文{showTranslation ? '已开启' : '已关闭'}</button><small className="lyric-source">{[current?.lyricsSource, current?.translationSource].filter(Boolean).join(' · ')}</small>{!!current?.lyrics.length && <small className="lyric-source">{current.lyrics.some((line) => timedWords(line)) ? '逐字歌词按演唱时间高亮；未带逐字时间的行按整句显示。' : current.lyrics.some((line) => line.time >= 0) ? '当前为逐句歌词。精确跟唱请单独导入逐字 LRC / YRC。' : '当前为纯文本歌词，没有演唱时间轴。'}</small>}</div>{renderLyrics(true)}</div>
       <div className="detail-player"><div className="detail-progress"><span>{formatTime(position)}</span><input aria-label="详情播放进度" type="range" min="0" max={duration || 1} step="0.1" value={Math.min(position, duration || 1)} disabled={!current || !duration} style={{ '--progress': `${duration ? position / duration * 100 : 0}%` } as React.CSSProperties} onChange={(event) => seek(Number(event.target.value))} /><span>{formatTime(duration)}</span></div><div className="full-playback"><button className="icon-button mode-button" aria-label={`详情播放模式：${modeLabels[mode]}，点击切换`} title={modeLabels[mode]} onClick={() => setMode(nextMode)}>{mode === 'shuffle' ? <Shuffle size={18} /> : mode === 'one' ? <Repeat1 size={18} /> : <Repeat size={18} />}</button><button className="icon-button" aria-label="上一首" disabled={!tracks.length} onClick={() => stepTrack(-1)}><SkipBack size={22} /></button><button className="play-main" aria-label={playing ? '暂停' : '播放'} onClick={togglePlay}>{playing ? <Pause size={21} fill="currentColor" /> : <Play size={21} fill="currentColor" />}</button><button className="icon-button" aria-label="下一首" disabled={!tracks.length} onClick={() => stepTrack(1)}><SkipForward size={22} /></button></div></div>
     </div>}
 
     {modal && ['import', 'settings', 'queue'].includes(modal) && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget && !busy) setModal(null); }}><section className={`modal ${modal === 'queue' ? 'queue-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><div className="modal-heading"><div><span className="eyebrow">{modal === 'import' ? 'BRING YOUR MUSIC HOME' : modal === 'settings' ? 'MAKE YOURSELF AT HOME' : 'UP NEXT'}</span><h2 id="modal-title">{modal === 'import' ? '让音乐，在这里相遇' : modal === 'settings' ? '偏好设置' : '播放队列'}</h2></div><button className="icon-button" disabled={!!busy} onClick={() => setModal(null)} aria-label="关闭弹窗"><X size={20} /></button></div>
       {modal === 'import' && <><button className="upload-zone" disabled={!!busy} onClick={() => inputRef.current?.click()}>{busy ? <LoaderCircle size={34} className="spin" /> : <FolderInput size={36} />}<strong>{busy || '点击选择，或把音乐包拖到这里'}</strong><span>ZIP 压缩包 / 多选音频与歌词文件</span><small>支持 MP3 · FLAC · WAV · M4A · AAC · OGG · OPUS</small></button>{busy && <button className="button outline" onClick={() => importController.current?.abort()}>暂停并保存进度</button>}<div className="import-separate-actions"><button className="button outline" disabled={!!busy} onClick={() => audioInputRef.current?.click()}><Music2 size={16} />单独导入音频</button><button className="button outline" disabled={!!busy || !tracks.length} onClick={() => lyricInputRef.current?.click()}><ListMusic size={16} />单独导入歌词</button></div><div className="import-help"><h3><Info size={16} />你的音乐包可以长这样</h3><pre>{`我的音乐.zip\n├── 歌手 - 歌曲.mp3\n├── 歌手 - 歌曲.lrc       原文歌词\n├── 歌手 - 歌曲.zh.lrc    中文译文（可选）\n└── cover.jpg            专辑封面（可选）`}</pre><p>文件可放在子文件夹中。同名文件会自动匹配；同一 LRC 的相同时间戳可分别写原文与中文。TXT 支持阅读，无法同步定位。弦栖霁导出的 ZIP 还会恢复收藏与歌词来源。</p><p>缺少歌词或译文时，可在歌曲详情点「联网补全」。不设音乐包总大小上限；仍受设备空间与单首解码能力限制。每首完成即保存，暂停后重选原包继续；未完成的单首歌曲会重新读取。</p></div><button className="text-button demo-link" disabled={!!busy} onClick={() => void loadDemo()}><Headphones size={16} />还没有音乐包？加载原创合成音乐示例<ArrowRight size={15} /></button></>}
-      {modal === 'settings' && <div className="settings-content"><UpdateSettings blocked={!!busy || !!storageProgress || !!nativeProgress} /><div className="setting-row"><div><strong>显示中文译文</strong><p>有译文的歌曲，将在原文下方显示中文</p></div><button className={`switch ${showTranslation ? 'on' : ''}`} role="switch" aria-checked={showTranslation} aria-label="显示中文译文" onClick={() => setShowTranslation(!showTranslation)}><span /></button></div><div className="setting-row"><div><strong>本地音乐库</strong><p>{storedTracks.length} 首本地歌曲 · {storageInfo}</p></div><button className="button outline" disabled={!storedTracks.length} onClick={() => setModal('export')}><Download size={14} />导出音乐包</button></div><div className="setting-row"><div><strong>四季氛围</strong><p>自动按本机月份切换，可手动选择或关闭</p></div><select aria-label="四季氛围" value={season} onChange={(event) => setSeason(event.target.value as SeasonChoice)}>{Object.entries(seasonLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div><div className="setting-row"><div><strong>断点恢复</strong><p>查看中断任务，导入需重选原包</p></div><button className="button outline" onClick={() => setModal('transfers')}>传输任务</button></div><OnlineSourceSettings auto={sourceAuto} tracks={storedTracks} blocked={!!busy || !!storageProgress || !!nativeProgress || cloud.caching} onChanged={async () => { setTracks(await getTracks()); setReady(true); }} /><StorageSettings blocked={!!busy || !!storageProgress || !!nativeProgress || sourceAuto.state.running || cloud.caching} trackCount={storedTracks.length} onError={notify} onExport={() => setModal('export')} onChanged={async () => { setTracks(await getTracks()); setReady(true); }} /><CloseSettings onError={notify} /><SleepSettings timer={sleepTimer} now={now} onStart={(minutes, behavior) => { const timer = { deadline: Date.now() + minutes * 60000, behavior, pending: false }; sleepRef.current = timer; if (nativeActiveRef.current) nativeSleepCommand.current = timer.deadline; setSleepTimer(timer); setNow(Date.now()); notify('睡眠定时已开始。'); }} onCancel={clearSleep} /><section className="fade-settings"><h3>播放淡入淡出</h3><label>过渡时长<select aria-label="淡入淡出时长" value={fadeDuration} onChange={(event) => setFadeDuration(Number(event.target.value))}><option value={0}>关闭</option><option value={300}>轻柔 · 0.3 秒</option><option value={500}>标准 · 0.5 秒</option><option value={1000}>舒缓 · 1 秒</option><option value={2000}>缓慢 · 2 秒</option></select></label><p className="field-help">播放时淡入、暂停时淡出；快速切换可中断过渡，音量设置不变。睡眠的立即停止不等待淡出。</p></section><ShortcutSettings /><AISettings config={aiConfig} onSave={saveAIConfig} /><DesktopSettings state={desktopState} onError={notify} /><div className="setting-note"><h3>关于歌词与译文</h3><p>本地歌词优先，可在详情页联网查找 LRCLIB 歌词，核对版本后保存。AI 译文按原文行号匹配，已有译文不重复翻译。下载与翻译结果保存在本机，支持离线阅读与 ZIP 导出。</p><h3>键盘快捷键</h3><p>空格：播放 / 暂停　← / →：后退 / 前进 5 秒　Esc：关闭普通弹窗；联网和导出时请使用窗口内的取消与关闭。</p><h3>储存与设备</h3><p>Windows 默认将全部数据保存在安装目录的 Data 文件夹，音乐库路径可查看和单独更换，歌词译文自动落盘。安卓可在“音乐库保存路径”查看地址，将内部曲库复制到自选目录，或直接打开已有文件音乐库；自选公共目录在卸载后保留，重装需重新授权，内部库仍需导出备份；两端可互相导入，并可连接私人在线曲库自动核对和上传；安卓需保持前台。安卓首次准备完成后使用原生前台播放服务接管队列，支持锁屏切歌与原生睡眠停止；请允许播放通知，部分厂商还需要取消电池限制。</p></div><div className="about-line"><span className="brand-symbol"><Headphones size={20} /></span><div><strong>弦栖霁</strong><small>v1.0.4 · 正式版 · 给音乐留一座岛</small></div><span>OFFLINE FIRST</span></div></div>}
+      {modal === 'settings' && <div className="settings-content"><UpdateSettings blocked={!!busy || !!storageProgress || !!nativeProgress || alignmentBusy} /><div className="setting-row"><div><strong>显示中文译文</strong><p>有译文的歌曲，将在原文下方显示中文</p></div><button className={`switch ${showTranslation ? 'on' : ''}`} role="switch" aria-checked={showTranslation} aria-label="显示中文译文" onClick={() => setShowTranslation(!showTranslation)}><span /></button></div><div className="setting-row"><div><strong>本地音乐库</strong><p>{storedTracks.length} 首本地歌曲 · {storageInfo}</p></div><button className="button outline" disabled={!storedTracks.length} onClick={() => setModal('export')}><Download size={14} />导出音乐包</button></div><div className="setting-row"><div><strong>四季氛围</strong><p>自动按本机月份切换，可手动选择或关闭</p></div><select aria-label="四季氛围" value={season} onChange={(event) => setSeason(event.target.value as SeasonChoice)}>{Object.entries(seasonLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div><div className="setting-row"><div><strong>断点恢复</strong><p>查看中断任务，导入需重选原包</p></div><button className="button outline" onClick={() => setModal('transfers')}>传输任务</button></div><OnlineSourceSettings auto={sourceAuto} tracks={storedTracks} blocked={!!busy || !!storageProgress || !!nativeProgress || cloud.caching || alignmentBusy} onChanged={async () => { setTracks(await getTracks()); setReady(true); }} /><StorageSettings blocked={!!busy || !!storageProgress || !!nativeProgress || sourceAuto.state.running || cloud.caching || alignmentBusy} trackCount={storedTracks.length} onError={notify} onExport={() => setModal('export')} onChanged={async () => { setTracks(await getTracks()); setReady(true); }} /><CloseSettings onError={notify} /><SleepSettings timer={sleepTimer} now={now} onStart={(minutes, behavior) => { const timer = { deadline: Date.now() + minutes * 60000, behavior, pending: false }; sleepRef.current = timer; if (nativeActiveRef.current) nativeSleepCommand.current = timer.deadline; setSleepTimer(timer); setNow(Date.now()); notify('睡眠定时已开始。'); }} onCancel={clearSleep} /><section className="fade-settings"><h3>播放淡入淡出</h3><label>过渡时长<select aria-label="淡入淡出时长" value={fadeDuration} onChange={(event) => setFadeDuration(Number(event.target.value))}><option value={0}>关闭</option><option value={300}>轻柔 · 0.3 秒</option><option value={500}>标准 · 0.5 秒</option><option value={1000}>舒缓 · 1 秒</option><option value={2000}>缓慢 · 2 秒</option></select></label><p className="field-help">播放时淡入、暂停时淡出；快速切换可中断过渡，音量设置不变。睡眠的立即停止不等待淡出。</p></section><ShortcutSettings /><AISettings config={aiConfig} onSave={saveAIConfig} alignment={automaticAlignment} /><DesktopSettings state={desktopState} onError={notify} /><div className="setting-note"><h3>关于歌词与译文</h3><p>本地歌词优先，可在详情页联网查找 LRCLIB 歌词，核对版本后保存。AI 译文按原文行号匹配，已有译文不重复翻译。下载与翻译结果保存在本机，支持离线阅读与 ZIP 导出。</p><h3>键盘快捷键</h3><p>空格：播放 / 暂停　← / →：后退 / 前进 5 秒　Esc：关闭普通弹窗；联网和导出时请使用窗口内的取消与关闭。</p><h3>储存与设备</h3><p>Windows 默认将全部数据保存在安装目录的 Data 文件夹，音乐库路径可查看和单独更换，歌词译文自动落盘。安卓可在“音乐库保存路径”查看地址，将内部曲库复制到自选目录，或直接打开已有文件音乐库；自选公共目录在卸载后保留，重装需重新授权，内部库仍需导出备份；两端可互相导入，并可连接私人在线曲库自动核对和上传；安卓需保持前台。安卓首次准备完成后使用原生前台播放服务接管队列，支持锁屏切歌与原生睡眠停止；请允许播放通知，部分厂商还需要取消电池限制。</p></div><div className="about-line"><span className="brand-symbol"><Headphones size={20} /></span><div><strong>弦栖霁</strong><small>v{appVersion} · 正式版 · 给音乐留一座岛</small></div><span>OFFLINE FIRST</span></div></div>}
       {modal === 'queue' && <div className="queue-list">{(queue.length ? queue.map((id) => tracks.find((track) => track.id === id)).filter((track): track is Track => Boolean(track)) : tracks).map((track, index) => <button key={track.id} className={`queue-row ${track.id === currentId ? 'active' : ''}`} onClick={() => playTrack(track)}><span>{String(index + 1).padStart(2, '0')}</span><Artwork track={track} /><span><strong>{track.title}</strong><small>{track.artist}</small></span>{track.id === currentId ? <Disc3 size={18} /> : <Play size={16} />}</button>)}{!tracks.length && <div className="empty-state"><ListMusic size={30} /><p>导入音乐后，下一首惊喜就在这里。</p></div>}</div>}
     </section></div>}
     {modal === 'lyrics' && <LyricImportDialog files={lyricFiles} tracks={tracks} onSave={async (id, patch) => { if (!await updateTrack(id, patch)) throw new Error('歌词保存失败，请检查歌曲和存储空间。'); }} onClose={() => setModal(null)} />}

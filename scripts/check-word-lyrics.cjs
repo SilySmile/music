@@ -1,0 +1,72 @@
+const { _electron } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const JSZip = require('jszip');
+
+async function main() {
+  const root = path.resolve(__dirname, '..');
+  const profile = path.join(root, 'test-results', `word-lyrics-${Date.now()}`);
+  const env = { ...process.env, TINGYU_TEST: '1', TINGYU_TEST_DATA: profile };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const errors = [];
+  let app;
+  try {
+    app = await _electron.launch({ executablePath: process.env.TINGYU_EXECUTABLE || path.join(root, 'node_modules/electron/dist/electron.exe'), args: process.env.TINGYU_EXECUTABLE ? [] : [root], env, cwd: root });
+    const page = await app.firstWindow(); page.on('pageerror', (error) => errors.push(error.message));
+    await page.waitForSelector('.empty-state');
+    const zip = await JSZip.loadAsync(await fs.readFile(path.join(root, 'public/demo/弦栖霁示例.zip')));
+    const audio = await Object.values(zip.files).find((file) => /\.wav$/i.test(file.name)).async('nodebuffer');
+    await page.locator('input[aria-label="选择单独音频文件"]').setInputFiles({ name: 'Fixture - Word Timing.wav', mimeType: 'audio/wav', buffer: audio });
+    await page.waitForSelector('.track-row');
+    const yrc = '[1000,5000](1000,200,0)快(1200,200,0)唱(2500,3500,0)啊\n[8000,2000](8000,2000,0)停';
+    await page.locator('input[aria-label="选择单独歌词文件"]').setInputFiles({ name: 'Word Timing.yrc', mimeType: 'text/plain', buffer: Buffer.from(yrc) });
+    await page.getByText('逐字时间轴，可跟唱高亮', { exact: false }).waitFor();
+    await page.getByRole('button', { name: '保存歌词到所选歌曲', exact: true }).click();
+    await page.getByRole('dialog', { name: '单独导入歌词' }).waitFor({ state: 'hidden' });
+    const [record] = await page.evaluate(() => window.tingyuDesktop.listLibraryTracks());
+    assert.equal(record.metadata.lyrics[0].words.length, 3);
+    const song = path.join(profile, '音乐库', '歌曲', record.metadata.id);
+    const lrc = (await fs.readdir(song)).find((name) => name.endsWith('.lrc') && !name.endsWith('.zh.lrc'));
+    assert.match(await fs.readFile(path.join(song, lrc), 'utf8'), /<00:01\.400><00:02\.500>/);
+    await page.getByRole('button', { name: '播放全部', exact: true }).click();
+    await page.waitForFunction(async () => { const s = await window.tingyuDesktop.getSnapshot(); return s?.position > 1 && s?.words?.length === 3 && s.advancing; });
+    await page.locator('audio').evaluate((audio) => { audio.pause(); audio.currentTime = 1.3; });
+    await page.waitForFunction(async () => { const s = await window.tingyuDesktop.getSnapshot(); return s && !s.playing && Math.abs(s.position - 1.3) < .02; });
+    await page.getByRole('button', { name: '打开完整歌词', exact: true }).click();
+    await page.locator('.lyric-line.active [data-timing="word"]').waitFor();
+    const overlayReady = app.context().waitForEvent('page');
+    await page.evaluate(() => window.tingyuDesktop.setVisible(true));
+    const overlay = await overlayReady; overlay.on('pageerror', (error) => errors.push(error.message));
+    await overlay.waitForSelector('.desktop-primary-line [data-timing="word"]');
+    await page.locator('audio').evaluate(async (audio) => { audio.pause(); await new Promise((resolve) => { audio.addEventListener('seeked', resolve, { once: true }); audio.currentTime = 1.3; }); });
+    await overlay.waitForFunction(() => document.querySelectorAll('.desktop-primary-line .timed-word-highlight')[1]?.style.clipPath.includes('50%'));
+    const clips = () => overlay.locator('.desktop-primary-line .timed-word-highlight').evaluateAll((nodes) => nodes.map((node) => node.style.clipPath));
+    const horizontal = await clips();
+    assert.equal(horizontal[0], 'inset(0px 0% 0px 0px)');
+    assert.ok(/(?:49|50|51)/.test(horizontal[1]), horizontal[1]);
+    assert.equal(horizontal[2], 'inset(0px 100% 0px 0px)');
+    await overlay.waitForTimeout(200);
+    assert.deepEqual(await clips(), horizontal, 'paused highlights must not advance');
+    await page.evaluate(() => window.tingyuDesktop.setStyle({ layout: 'vertical' }));
+    await overlay.waitForSelector('.desktop-layout-vertical');
+    const vertical = await clips();
+    assert.ok(/inset\(0px 0px (?:49|50|51)/.test(vertical[1]), vertical[1]);
+    await overlay.screenshot({ path: path.join(root, 'test-results/word-lyrics-vertical.png'), omitBackground: true });
+    await page.evaluate(() => window.tingyuDesktop.setStyle({ layout: 'horizontal' }));
+    await overlay.waitForSelector('.desktop-layout-horizontal');
+    await overlay.screenshot({ path: path.join(root, 'test-results/word-lyrics-horizontal.png'), omitBackground: true });
+    // Real IPC path: plain LRC has no fake within-line animation.
+    await page.evaluate(async () => { const s = await window.tingyuDesktop.getSnapshot(); window.tingyuDesktop.updateSnapshot({ ...s, words: undefined, playing: false }); });
+    await overlay.waitForSelector('.desktop-primary-line [data-timing="line"]');
+    assert.equal(await overlay.locator('.timed-word-highlight').count(), 0);
+    const plain = await overlay.locator('.desktop-primary-line .timed-lyric-text').evaluate((node) => getComputedStyle(node).color);
+    assert.equal(plain, 'rgb(255, 220, 114)');
+    assert.deepEqual(errors, []);
+    console.log('PASS YRC picker, source metadata, enhanced LRC persistence, real audio clock, IPC words, uneven per-word highlights, pause, seek, horizontal / vertical layouts and honest line-only fallback');
+    const closed = app.waitForEvent('close');
+    await page.evaluate(() => window.tingyuDesktop.control('quit'));
+    await closed; app = undefined;
+  } finally { if (app) await app.close(); }
+}
+main().catch((error) => { console.error(error); process.exitCode = 1; });

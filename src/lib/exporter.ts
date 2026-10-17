@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { Capacitor } from '@capacitor/core';
 import type { LyricLine, Track } from '../types';
+import { enhancedLyricText, lyricTimestamp, timedWords } from './lyricTiming';
 
 export type ExportManifest = { format: 'tingyu-library'; version: 1; exportedAt: string; tracks: { id: string; title: string; artist: string; album: string; favorite: boolean; addedAt: number; lastPlayed?: number; lyricsSource?: string; translationSource?: string; lyrics: LyricLine[] }[] };
 
@@ -12,9 +13,10 @@ export function safeFilename(value: string) {
 export function serializeLyrics(lines: LyricLine[], translated = false) {
   const hasTime = lines.some((line) => line.time >= 0);
   return lines.map((line) => {
-    const text = translated ? line.translation ?? '' : line.text;
+    const text = translated ? line.translation ?? '' : enhancedLyricText(line);
     if (!text) return hasTime ? '' : ' ';
     if (line.time < 0) return text;
+    if (timedWords(line)) return `[${lyricTimestamp(line.time)}]${text}`;
     const hundredths = Math.round(line.time * 100);
     return `[${Math.floor(hundredths / 6000).toString().padStart(2, '0')}:${Math.floor(hundredths / 100 % 60).toString().padStart(2, '0')}.${(hundredths % 100).toString().padStart(2, '0')}]${text}`;
   }).filter((line) => line !== '').join('\n');

@@ -57,6 +57,8 @@ contextBridge.exposeInMainWorld('tingyuDesktop', {
   hideTrayMenu: () => ipcRenderer.send('tray:hide'),
   request: (request) => ipcRenderer.invoke('network:get', request),
   requestAI: (request) => ipcRenderer.invoke('network:ai', request),
+  requestAudioAI: (request) => ipcRenderer.invoke('network:audio-ai', request),
+  cancelAudioAI: (id) => ipcRenderer.invoke('network:cancel-audio-ai', id),
   getSourceConfig: () => ipcRenderer.invoke('source:get-config'),
   saveSourceConfig: (value) => ipcRenderer.invoke('source:save-config', value),
   requestSource: (request) => ipcRenderer.invoke('source:request', request),

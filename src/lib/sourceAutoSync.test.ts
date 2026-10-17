@@ -48,6 +48,18 @@ describe('automatic private source upload', () => {
     expect(await source.run([changed])).toMatchObject({ uploaded: 1 });
     expect(source.remote.get(track.id)?.metadata.lyrics[0].translation).toBe('修订的中文');
   });
+  it('detects word timing edits, supplements missing word timing and protects conflicts', async () => {
+    const track = song();
+    const timed = { ...track, lyrics: [{ ...track.lyrics[0], words: [{ time: 0, endTime: .8, text: 'Light' }] }] };
+    expect(sourceSyncTrigger([timed])).not.toBe(sourceSyncTrigger([track]));
+    expect(planSourceUpload(track, undefined, record(timed)).action).toBe('skip');
+    expect(planSourceUpload(timed, undefined, record(track))).toMatchObject({ action: 'upload', track: timed });
+    const other = { ...timed, lyrics: [{ ...timed.lyrics[0], words: [{ time: 0, endTime: .5, text: 'Light' }] }] };
+    expect(planSourceUpload(timed, undefined, record(other)).action).toBe('conflict');
+    const source = fixture(); await source.run([track]);
+    expect(await source.run([timed])).toMatchObject({ uploaded: 1 });
+    expect(source.remote.get(track.id)?.metadata.lyrics[0].words).toEqual(timed.lyrics[0].words);
+  });
   it('protects concurrent edits and first-connection conflicts, retaining both sides', async () => {
     const source = fixture(); const track = song(); await source.run([track]);
     source.remote.set(track.id, record({ ...track, lyrics: [{ ...track.lyrics[0], translation: '另一台设备的中文' }] }, 2));

@@ -1,7 +1,8 @@
 import { BlobReader, BlobWriter, ZipReader, configure } from '@zip.js/zip.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { parseBlob } from 'music-metadata';
-import type { Track } from '../types';
+import type { LyricLine, Track } from '../types';
+import { timedWords } from './lyricTiming';
 import { decodeText, mergeTranslation, parseLyrics } from './lyrics';
 
 type Entry = { name: string; size: number; id: string; group: string; read: (signal?: AbortSignal) => Promise<Blob> };
@@ -60,7 +61,7 @@ export async function importFiles(files: File[], onProgress: (message: string) =
         const audit = item.translationAudit;
         if (audit && typeof audit.song === 'string' && typeof audit.artist === 'string' && typeof audit.model === 'string' && Number.isFinite(audit.verifiedAt) && Number.isSafeInteger(audit.checkedLines) && audit.checkedLines >= 0) metadata.translationAudit = { song: audit.song.slice(0, 500), artist: audit.artist.slice(0, 500), model: audit.model.slice(0, 500), verifiedAt: audit.verifiedAt, checkedLines: audit.checkedLines };
         if (Array.isArray(item.lyrics) && item.lyrics.length <= 5000 && item.lyrics.every((line: { time?: unknown; text?: unknown; translation?: unknown }) => typeof line.time === 'number' && Number.isFinite(line.time) && line.time >= -1 && typeof line.text === 'string' && line.text.length <= 6000 && (line.translation === undefined || typeof line.translation === 'string' && line.translation.length <= 6000))) {
-          metadata.lyrics = item.lyrics.map((line: { time: number; text: string; translation?: string }) => ({ time: line.time, text: line.text, translation: line.translation }));
+          metadata.lyrics = item.lyrics.map((line: LyricLine) => ({ time: line.time, text: line.text, translation: line.translation, ...(timedWords(line) ? { words: timedWords(line)!.map((word) => ({ ...word })) } : {}) }));
         }
         restoredMetadata.set(item.id, metadata);
       }
@@ -107,7 +108,7 @@ export async function importFiles(files: File[], onProgress: (message: string) =
         const picture = metadata.common.picture?.[0];
         if (picture) cover = new Blob([new Uint8Array(picture.data)], { type: picture.format });
       } catch { warnings.push(`${filename}：未读到标签，已使用文件名。`); }
-      const lyricEntry = lookup.get(`${base}.lrc`) ?? lookup.get(`${base}.txt`);
+      const lyricEntry = lookup.get(`${base}.yrc`) ?? lookup.get(`${base}.lrc`) ?? lookup.get(`${base}.txt`);
       const translatedEntry = ['.zh.lrc', '.zh-cn.lrc', '.translated.lrc', '.cn.lrc', '.zh.txt'].map((suffix) => lookup.get(base + suffix)).find(Boolean);
       let lyrics = lyricEntry ? parseLyrics(decodeText(await (await lyricEntry.read(options.signal)).arrayBuffer())) : [];
       if (translatedEntry) lyrics = mergeTranslation(lyrics, parseLyrics(decodeText(await (await translatedEntry.read(options.signal)).arrayBuffer())));

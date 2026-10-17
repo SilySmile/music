@@ -356,7 +356,8 @@ async function main() {
     assert.ok((await page.locator('.page-footer').textContent()).includes('弦栖霁 XIANQIJI'));
     console.log('PASS seasonal themes, animation switch, renamed app and simplified AI settings');
     await page.getByLabel('翻译 API Key', { exact: true }).fill('test-not-a-real-key');
-    await page.getByRole('button', { name: '保存翻译配置', exact: true }).click();
+    await page.getByLabel('自动生成缺失的逐字歌词', { exact: true }).uncheck();
+    await page.getByRole('button', { name: '保存 AI 配置', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.config-save')?.textContent?.includes('配置已保存'));
     assert.ok(!(await page.evaluate(() => localStorage.getItem('tingyu-ai-config'))).includes('test-not-a-real-key'));
     await page.getByRole('button', { name: '关闭弹窗', exact: true }).click();

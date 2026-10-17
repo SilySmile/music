@@ -1,6 +1,7 @@
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { sha256 } from '@noble/hashes/sha2.js';
 import type { Track } from '../types';
+import { timedWords } from './lyricTiming';
 import { getTrack, saveStreamedTrack, saveTracks } from './storage';
 
 export type SourceConfig = { baseUrl: string; token: string; remember: boolean; autoSync?: boolean; connected?: boolean; path?: string };
@@ -142,8 +143,11 @@ export async function uploadSourceTrack(track: Track, revision: number, config: 
   localStorage.removeItem(key); return record;
 }
 export function supplementSourceMetadata(local: Track, remote: SourceTrack['metadata']): Track {
-  const translated = new Map(remote.lyrics.map((line) => [`${Math.round(line.time * 100)}|${line.text.trim()}`, line.translation]));
-  const lyrics = local.lyrics.length ? local.lyrics.map((line) => ({ ...line, translation: line.translation || translated.get(`${Math.round(line.time * 100)}|${line.text.trim()}`) })) : remote.lyrics;
+  const remoteLines = new Map(remote.lyrics.map((line) => [`${Math.round(line.time * 100)}|${line.text.trim()}`, line]));
+  const lyrics = local.lyrics.length ? local.lyrics.map((line) => {
+    const other = remoteLines.get(`${Math.round(line.time * 100)}|${line.text.trim()}`);
+    return { ...line, ...(!timedWords(line) && other && timedWords(other) ? { words: other.words } : {}), translation: line.translation || other?.translation };
+  }) : remote.lyrics;
   return { ...local, lyrics, lyricsSource: local.lyrics.length ? local.lyricsSource : remote.lyricsSource, translationSource: local.translationSource || remote.translationSource, translationAudit: local.translationAudit || (!local.lyrics.length ? remote.translationAudit : undefined) };
 }
 export async function downloadSourceTrack(record: SourceTrack, onProgress: (message: string) => void, signal: AbortSignal, request: SourceRequester = sourceRequest) {
