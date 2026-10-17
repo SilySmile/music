@@ -144,7 +144,8 @@ async function main() {
       await overlay.waitForSelector('.desktop-single-line');
       assert.equal(await overlay.locator('.desktop-secondary-line').isVisible(), false);
       await send({ ...snapshot, text: original.secondary, previousText: original.primary, nextText: '', translation: '', lineIndex: 1, playing: false });
-      await overlay.waitForFunction((value) => document.querySelector('.desktop-primary-line .desktop-text-base').textContent === value, original.primary);
+      await overlay.waitForFunction((value) => document.querySelector('.desktop-primary-line.is-current .desktop-text-base').textContent === value, original.secondary);
+      assert.equal(await overlay.locator('.desktop-secondary-line').isVisible(), false);
       await settle();
       console.log(`PASS ${layout}: second phrase starts three characters beyond first endpoint, fitted to resized window`);
     };
@@ -227,9 +228,9 @@ async function main() {
     await overlay.waitForFunction(() => document.querySelector('.desktop-primary-line.is-current .desktop-text-base')?.textContent === '入巷间吃汤面 笑看窗边飞雪');
     assert.equal(await overlay.locator('.desktop-secondary-line .desktop-text-base').textContent(), '取腰间明珠弹山雀 立枇杷于庭前');
     await application.evaluate(({ BrowserWindow }, snapshot) => {
-      BrowserWindow.getAllWindows().find((entry) => entry.webContents.getURL().endsWith('#desktop-lyrics')).webContents.send('desktop:snapshot', { ...snapshot, previousText: '入巷间吃汤面 笑看窗边飞雪', text: '取腰间明珠弹山雀 立枇杷于庭前', nextText: '', lineIndex: 1, position: 28, lineStart: 20, lineEnd: 30, playing: false });
+      BrowserWindow.getAllWindows().find((entry) => entry.webContents.getURL().endsWith('#desktop-lyrics')).webContents.send('desktop:snapshot', { ...snapshot, previousText: '入巷间吃汤面 笑看窗边飞雪', text: '取腰间明珠弹山雀 立枇杷于庭前', nextText: '山前听风起 云外等月明', lineIndex: 1, position: 28, lineStart: 20, lineEnd: 30, playing: false });
     }, liveSnapshot);
-    await overlay.waitForFunction(() => document.querySelector('.desktop-primary-line .desktop-text-base').textContent === '入巷间吃汤面 笑看窗边飞雪');
+    await overlay.waitForFunction(() => document.querySelector('.desktop-primary-line .desktop-text-base').textContent === '山前听风起 云外等月明');
     assert.equal(await overlay.locator('.desktop-secondary-line.is-current').count(), 1);
     assert.equal(await overlay.locator('.desktop-primary-line .desktop-text-highlight').count(), 0);
     await overlay.screenshot({ path: path.join(results, 'desktop-vertical-reference.png'), omitBackground: true });
@@ -258,9 +259,9 @@ async function main() {
     await page.waitForFunction(async () => !(await window.tingyuDesktop.getSnapshot()).playing);
     const horizontalSnapshot = await page.evaluate(() => window.tingyuDesktop.getSnapshot());
     await application.evaluate(({ BrowserWindow }, snapshot) => {
-      BrowserWindow.getAllWindows().find((entry) => entry.webContents.getURL().endsWith('#desktop-lyrics')).webContents.send('desktop:snapshot', { ...snapshot, previousText: '入巷间吃汤面 笑看窗边飞雪', text: '取腰间明珠弹山雀 立枇杷于庭前', nextText: '', lineIndex: 1, position: 28, lineStart: 20, lineEnd: 30, playing: false });
+      BrowserWindow.getAllWindows().find((entry) => entry.webContents.getURL().endsWith('#desktop-lyrics')).webContents.send('desktop:snapshot', { ...snapshot, previousText: '入巷间吃汤面 笑看窗边飞雪', text: '取腰间明珠弹山雀 立枇杷于庭前', nextText: '山前听风起 云外等月明', lineIndex: 1, position: 28, lineStart: 20, lineEnd: 30, playing: false });
     }, horizontalSnapshot);
-    await overlay.waitForFunction(() => document.querySelector('.desktop-primary-line .desktop-text-base').textContent === '入巷间吃汤面 笑看窗边飞雪');
+    await overlay.waitForFunction(() => document.querySelector('.desktop-primary-line .desktop-text-base').textContent === '山前听风起 云外等月明');
     const horizontalLines = await overlay.evaluate(() => {
       const primary = document.querySelector('.desktop-primary-line');
       const secondary = document.querySelector('.desktop-secondary-line');

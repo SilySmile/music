@@ -19,7 +19,7 @@ async function main() {
     const audio = await Object.values(zip.files).find((file) => /\.wav$/i.test(file.name)).async('nodebuffer');
     await page.locator('input[aria-label="选择单独音频文件"]').setInputFiles({ name: 'Fixture - Word Timing.wav', mimeType: 'audio/wav', buffer: audio });
     await page.waitForSelector('.track-row');
-    const yrc = '[1000,5000](1000,200,0)快(1200,200,0)唱(2500,3500,0)啊\n[8000,2000](8000,2000,0)停';
+    const yrc = '[1000,5000](1000,200,0)快(1200,200,0)唱(2500,3500,0)啊\n[8000,2000](8000,2000,0)停\n[12000,2000](12000,1000,0)继(13000,1000,0)续';
     await page.locator('input[aria-label="选择单独歌词文件"]').setInputFiles({ name: 'Word Timing.yrc', mimeType: 'text/plain', buffer: Buffer.from(yrc) });
     await page.getByText('逐字时间轴，可跟唱高亮', { exact: false }).waitFor();
     await page.getByRole('button', { name: '保存歌词到所选歌曲', exact: true }).click();
@@ -56,6 +56,28 @@ async function main() {
     await page.evaluate(() => window.tingyuDesktop.setStyle({ layout: 'horizontal' }));
     await overlay.waitForSelector('.desktop-layout-horizontal');
     await overlay.screenshot({ path: path.join(root, 'test-results/word-lyrics-horizontal.png'), omitBackground: true });
+    // Seek the real audio across line boundaries. The upcoming phrase replaces
+    // the finished slot exactly when the next phrase becomes current, while
+    // the current phrase retains its alternating slot and word highlighting.
+    for (const layout of ['horizontal', 'vertical']) {
+      await page.evaluate((layout) => window.tingyuDesktop.setStyle({ layout, verticalContent: 'next' }), layout);
+      for (const [position, index, primary, secondary, active] of [
+        [7.99, 0, '快唱啊', '停', 'primary'],
+        [8.01, 1, '继续', '停', 'secondary'],
+        [11.99, 1, '继续', '停', 'secondary'],
+        [12.01, 2, '继续', '', 'primary'],
+        [8.01, 1, '继续', '停', 'secondary'],
+      ]) {
+        await page.locator('audio').evaluate(async (audio, position) => { audio.pause(); await new Promise((resolve) => { audio.addEventListener('seeked', resolve, { once: true }); audio.currentTime = position; }); }, position);
+        await page.waitForFunction(async (index) => (await window.tingyuDesktop.getSnapshot()).lineIndex === index, index);
+        await overlay.waitForFunction(({ primary, secondary, active }) => document.querySelector('.desktop-primary-line .desktop-text-base')?.textContent === primary && document.querySelector('.desktop-secondary-line .desktop-text-base')?.textContent === secondary && !!document.querySelector(`.desktop-${active}-line.is-current [data-timing="word"]`), { primary, secondary, active });
+        assert.equal(await overlay.locator(`.desktop-${active === 'primary' ? 'secondary' : 'primary'}-line .timed-word-highlight`).count(), 0);
+        if (!secondary) assert.equal(await overlay.locator('.desktop-secondary-line').isVisible(), false);
+      }
+    }
+    await page.evaluate(() => window.tingyuDesktop.setStyle({ layout: 'horizontal' }));
+    await page.locator('audio').evaluate((audio) => { audio.currentTime = 1.3; });
+    await page.waitForFunction(async () => (await window.tingyuDesktop.getSnapshot()).lineIndex === 0);
     // Ordinary LRC retains the original linear sweep by default.
     await page.evaluate(async () => { const s = await window.tingyuDesktop.getSnapshot(); window.tingyuDesktop.updateSnapshot({ ...s, words: undefined, playing: false }); });
     await overlay.waitForSelector('.desktop-primary-line [data-timing="line"]');
@@ -63,7 +85,7 @@ async function main() {
     const linear = await overlay.locator('.desktop-primary-line .timed-line .timed-word-highlight').evaluate((node) => node.style.clipPath);
     assert.ok(linear.includes('inset('), linear);
     assert.deepEqual(errors, []);
-    console.log('PASS YRC picker, source metadata, enhanced LRC persistence, real audio clock, IPC words, uneven per-word highlights, pause, seek, horizontal / vertical layouts and default linear line sweep');
+    console.log('PASS YRC picker, source metadata, enhanced LRC persistence, real audio clock, IPC words, uneven per-word highlights, pause, seek, immediate per-line slot replacement at next-line start in both layouts, odd-line backward seek, final single line and default linear line sweep');
     const closed = app.waitForEvent('close');
     await page.evaluate(() => window.tingyuDesktop.control('quit'));
     await closed; app = undefined;

@@ -11,9 +11,24 @@ describe('desktop bilingual content and spacing', () => {
   });
   it('keeps two source slots when explicitly selected or no translation exists', () => {
     for (const content of [desktopContent(snapshot, 'next'), desktopContent({ ...snapshot, translation: '' }, 'auto')]) {
-      expect(content).toMatchObject({ paired: true, secondaryActive: true, primary: snapshot.previousText, secondary: snapshot.text });
+      expect(content).toMatchObject({ paired: true, secondaryActive: true, primary: snapshot.nextText, secondary: snapshot.text });
     }
     expect(desktopContent({ ...snapshot, lineIndex: 0, translation: '' }, 'auto').secondary).toBe(snapshot.nextText);
+  });
+  it('replaces only the finished slot as each next line starts, including seeking directly to an odd line', () => {
+    const lines = ['第一句', '第二句', '第三句', '第四句', '最后一句'];
+    for (const mode of ['next', 'auto'] as const) {
+      for (const [lineIndex, text] of lines.entries()) {
+        const nextText = lines[lineIndex + 1] || '';
+        const content = desktopContent({ ...snapshot, translation: '', text, nextText, previousText: '', lineIndex }, mode);
+        const secondaryActive = !!nextText && lineIndex % 2 === 1;
+        expect(content).toEqual({ paired: true, secondaryActive, primary: secondaryActive ? nextText : text, secondary: secondaryActive ? text : nextText });
+        expect([content.primary, content.secondary]).not.toContain(lines[lineIndex - 1]);
+      }
+    }
+  });
+  it('shows only the current final line when no upcoming line remains, including an odd final index', () => {
+    expect(desktopContent({ ...snapshot, nextText: '' }, 'next')).toEqual({ paired: true, secondaryActive: false, primary: snapshot.text, secondary: '' });
   });
   it('does not pass another source line off as a missing translation', () => {
     expect(desktopContent({ ...snapshot, translation: '  ' }, 'translation').secondary).toBe('暂无中文译文');
