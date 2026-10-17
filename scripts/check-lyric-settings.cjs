@@ -1,0 +1,133 @@
+const { _electron } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+async function main() {
+  const root = path.resolve(__dirname, '..');
+  const textMode = process.argv.includes('--text');
+  const profile = path.join(root, 'test-results', `lyric-settings-${Date.now()}`);
+  const env = { ...process.env, TINGYU_TEST: '1', TINGYU_TEST_DATA: profile }; delete env.ELECTRON_RUN_AS_NODE;
+  let app;
+  try {
+    app = await _electron.launch({ executablePath: process.env.TINGYU_EXECUTABLE || path.join(root, 'node_modules/electron/dist/electron.exe'), args: process.env.TINGYU_EXECUTABLE ? [] : [root], env, cwd: root });
+    const page = await app.firstWindow(); const errors = []; page.on('pageerror', (error) => errors.push(error.message));
+    await page.waitForSelector('.empty-state');
+    await app.evaluate(({ net }, textMode) => {
+      const originalFetch = net.fetch.bind(net); globalThis.manualTimingCalls = []; globalThis.failTiming = false; globalThis.delayTiming = false;
+      net.fetch = async (url, options) => {
+        if (String(url) === 'https://api.deepseek.com/chat/completions') {
+          const body = JSON.parse(options.body); const data = JSON.parse(body.messages[1].content);
+          globalThis.manualTimingCalls.push({ type: 'text', lines: data.lines.map((line) => line.id) });
+          if (globalThis.delayTiming) await new Promise((resolve) => setTimeout(resolve, 1000));
+          if (globalThis.failTiming) return new Response('{}', { status: 503 });
+          const lines = data.lines.map((line) => ({ id: line.id, source: line.source, singing: '模拟唱法：停顿后拖音，未经音频验证', tailPause: .2, words: line.units.map((text, i) => ({ text, duration: i === line.units.length - 1 ? 3 : 1, pauseBefore: i ? .2 : 0 })) }));
+          return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ song: data.song, lines }) } }] }), { status: 200 });
+        }
+        if (String(url) === 'https://manual.example.test/v1/audio/transcriptions') {
+          globalThis.manualTimingCalls.push({ type: 'audio', bytes: options.body.get('file').size });
+          if (globalThis.delayTiming) await new Promise((resolve) => setTimeout(resolve, 1000));
+          if (globalThis.failTiming) return new Response('{}', { status: 503 });
+          const words = [{ word: '你', start: 1, end: 2 }, { word: '好', start: 3, end: 4 }, { word: '再', start: 7, end: 8 }, { word: '见', start: 9, end: 10 }];
+          return new Response(JSON.stringify({ words }), { status: 200 });
+        }
+        if (/^https?:/.test(String(url))) throw new Error('Unexpected external network in isolated lyric editor test');
+        return originalFetch(url, options);
+      };
+    }, textMode);
+    await page.locator('input[aria-label="选择音乐压缩包或歌曲文件"]').setInputFiles(path.join(root, 'public/demo/弦栖霁示例.zip'));
+    await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 3);
+    const original = await page.evaluate(() => window.tingyuDesktop.listLibraryTracks()); const id = original[0].metadata.id;
+    const fixtureLyrics = [{ time: 1, text: '你好', translation: 'Hello' }, { time: 7, text: '再见', translation: 'Goodbye' }];
+    await page.evaluate(async ({ id, lyrics, textMode }) => {
+      await window.tingyuDesktop.patchLibraryTrack(id, { lyrics });
+      localStorage.setItem('tingyu-ai-config', JSON.stringify({ url: textMode ? 'https://api.deepseek.com' : 'https://manual.example.test/v1', model: 'fixture-chat', audioModel: 'whisper-1', alignmentMode: textMode ? 'text' : 'audio', autoAlign: true }));
+      await window.tingyuDesktop.saveAIKey('fixture-only-key');
+    }, { id, lyrics: fixtureLyrics, textMode });
+    await page.reload(); await page.waitForSelector('.track-row');
+    await page.getByRole('button', { name: '偏好设置', exact: true }).first().click();
+    assert.equal(await page.getByLabel('自动生成缺失的逐字歌词').count(), 0);
+    await page.getByRole('button', { name: '保存 AI 配置', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.config-save')?.textContent.includes('配置已保存'));
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('tingyu-ai-config')).autoAlign), false);
+    await page.waitForTimeout(1500);
+    assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), 0, 'legacy autoAlign=true and saving configuration must never submit AI');
+    await page.getByRole('button', { name: '打开歌词设置', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '歌词设置', exact: true });
+    await dialog.getByLabel('歌词歌曲', { exact: true }).selectOption(id);
+    await page.locator('audio').evaluate((audio) => { audio.muted = true; });
+    await dialog.getByRole('button', { name: '播放所选歌曲', exact: true }).click();
+    await page.waitForFunction(async (id) => (await window.tingyuDesktop.getSnapshot()).title && localStorage.getItem('tingyu-current') === id, id);
+    await dialog.getByRole('button', { name: '暂停当前歌曲', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('audio').paused);
+    await dialog.getByLabel('第1字结束时间', { exact: true }).fill('2.000');
+    await dialog.getByLabel('第2字开始时间', { exact: true }).fill('2.500');
+    await dialog.getByRole('button', { name: '保存歌词时间', exact: true }).click();
+    await dialog.getByText('逐字时间已保存，主窗口和桌面歌词已更新。', { exact: true }).waitFor();
+    let saved = (await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id);
+    assert.equal(saved.metadata.lyrics[0].words[0].endTime, 2); assert.equal(saved.metadata.lyrics[0].words[1].time, 2.5);
+    assert.deepEqual(saved.metadata.lyrics.map((line) => line.translation), ['Hello', 'Goodbye']);
+    assert.equal(saved.metadata.lyrics[1].words, undefined, 'saving one line must not turn untouched lines into uniform drafts');
+    await dialog.getByRole('button', { name: '定位第2字', exact: true }).click();
+    await page.waitForFunction(async () => Math.abs((await window.tingyuDesktop.getSnapshot()).position - 2.5) < .01);
+    await dialog.getByRole('button', { name: '第2字取当前开始时间', exact: true }).click();
+    assert.equal(await dialog.getByLabel('第2字开始时间', { exact: true }).inputValue(), '2.500');
+    await dialog.getByLabel('第2字开始时间', { exact: true }).fill('1.500');
+    await dialog.getByRole('button', { name: '保存歌词时间', exact: true }).click();
+    await dialog.getByText(/第 2 个字词时间无效/).waitFor();
+    assert.deepEqual((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id).metadata.lyrics, saved.metadata.lyrics);
+    await dialog.getByRole('button', { name: '还原未保存修改', exact: true }).click();
+    await dialog.getByRole('button', { name: 'AI 生成本句', exact: true }).click();
+    await dialog.getByText('AI 生成完成，可继续调整；点击“保存歌词时间”后生效。', { exact: true }).waitFor();
+    assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), 1);
+    assert.deepEqual((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id).metadata.lyrics, saved.metadata.lyrics, 'AI generation is a draft until explicit save');
+    await dialog.getByRole('button', { name: '保存歌词时间', exact: true }).click();
+    await dialog.getByText('逐字时间已保存，主窗口和桌面歌词已更新。', { exact: true }).waitFor();
+    saved = (await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id);
+    assert.equal(saved.metadata.lyrics[1].words, undefined, 'generate this line must preserve other missing lines');
+    if (textMode) assert.equal(saved.metadata.lyrics[0].wordTiming, 'estimated');
+    await dialog.getByRole('button', { name: 'AI 生成整首缺失时间', exact: true }).click();
+    await dialog.getByText('AI 生成完成，可继续调整；点击“保存歌词时间”后生效。', { exact: true }).waitFor();
+    if (textMode) assert.deepEqual(await app.evaluate(() => globalThis.manualTimingCalls.map((call) => call.lines)), [[0], [1]]);
+    await dialog.getByRole('button', { name: '保存歌词时间', exact: true }).click();
+    await dialog.getByText('逐字时间已保存，主窗口和桌面歌词已更新。', { exact: true }).waitFor();
+    saved = (await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id);
+    assert.ok(saved.metadata.lyrics.every((line) => line.words?.length));
+    await dialog.getByRole('button', { name: 'AI 生成整首缺失时间', exact: true }).click();
+    await dialog.getByText('当前范围已有逐字时间或没有演唱文本，已跳过，未调用 AI。', { exact: true }).waitFor();
+    assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), 2, 'all-valid songs must skip both text and audio paid calls');
+    await dialog.evaluate((element) => { element.scrollTop = 0; });
+    await page.screenshot({ path: path.join(root, 'test-results', `lyric-settings-${textMode ? 'text' : 'audio'}-desktop.png`) });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobile = await dialog.boundingBox(); assert.ok(mobile.x >= 0 && mobile.x + mobile.width <= 392);
+    await page.screenshot({ path: path.join(root, 'test-results', `lyric-settings-${textMode ? 'text' : 'audio'}-mobile.png`) });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await app.evaluate(() => { globalThis.failTiming = true; });
+    await dialog.getByRole('button', { name: 'AI 生成本句', exact: true }).click();
+    await dialog.getByText(/503/).waitFor();
+    assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), 3);
+    assert.deepEqual((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id).metadata.lyrics, saved.metadata.lyrics);
+    await app.evaluate(() => { globalThis.failTiming = false; globalThis.delayTiming = true; });
+    await dialog.getByRole('button', { name: 'AI 生成本句', exact: true }).click();
+    await page.waitForFunction(async () => document.querySelector('.timing-status')?.textContent.includes('正在'));
+    await dialog.getByRole('button', { name: '取消生成', exact: true }).click();
+    await dialog.getByText('生成已取消，未保存的调整保留。', { exact: true }).waitFor();
+    assert.deepEqual((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id).metadata.lyrics, saved.metadata.lyrics);
+    await page.evaluate(async (id) => {
+      const record = (await window.tingyuDesktop.listLibraryTracks()).find((record) => record.metadata.id === id);
+      await window.tingyuDesktop.patchLibraryTrack(id, { lyrics: record.metadata.lyrics.map((line, index) => index === 0 ? { ...line, text: '新的原文', words: undefined } : line) });
+    }, id);
+    await dialog.getByRole('button', { name: '保存歌词时间', exact: true }).click();
+    await dialog.getByText('原歌词已改变，请还原草稿后重新调整。', { exact: true }).waitFor();
+    assert.equal((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id).metadata.lyrics[0].text, '新的原文');
+    const callsBeforeReload = await app.evaluate(() => globalThis.manualTimingCalls.length);
+    await page.getByRole('button', { name: '关闭歌词设置', exact: true }).click();
+    await page.reload(); await page.waitForSelector('.track-row'); await page.waitForTimeout(1500);
+    assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), callsBeforeReload, 'restart never retries a manual failed/cancelled job');
+    const directory = path.join(profile, '音乐库', '歌曲', id);
+    const lrc = (await fs.readdir(directory)).find((name) => name.endsWith('.lrc') && !name.endsWith('.zh.lrc'));
+    assert.match(await fs.readFile(path.join(directory, lrc), 'utf8'), /<00:/);
+    assert.deepEqual(errors, []);
+    console.log(`PASS manual lyric settings (${textMode ? 'chat' : 'audio'}): legacy auto flag disabled, zero AI on startup/config save/import/restart, per-character editing, overlap refusal without overwrite, manual AI this-line and whole-song drafts, explicit save and Enhanced LRC/Chinese persistence, provider failure without automatic retry; isolated fixtures only`);
+  } finally { if (app) await app.close(); }
+}
+main().catch((error) => { console.error(error); process.exitCode = 1; });

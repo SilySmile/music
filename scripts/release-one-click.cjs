@@ -117,8 +117,8 @@ async function build(runtime, commit) {
   assertBuildDirectory(root, directory);
   await node('scripts/package-desktop.cjs');
   environment.TINGYU_EXECUTABLE = path.join(directory, 'win-unpacked', '弦栖霁.exe');
-  for (const script of ['smoke', 'check-playback', 'check-word-lyrics', 'check-auto-alignment', 'check-updates', 'check-online-source', 'check-auto-source', 'check-library-safety', 'check-cloud-listening', 'check-android-storage-ui', 'check-portable']) await node(`scripts/${script}.cjs`);
-  await node('scripts/check-auto-alignment.cjs', ['--text']);
+  for (const script of ['smoke', 'check-playback', 'check-word-lyrics', 'check-lyric-settings', 'check-updates', 'check-online-source', 'check-auto-source', 'check-library-safety', 'check-cloud-listening', 'check-android-storage-ui', 'check-portable']) await node(`scripts/${script}.cjs`);
+  await node('scripts/check-lyric-settings.cjs', ['--text']);
   await node('scripts/check-update-handoff.cjs');
   await node('scripts/check-installer-upgrade.cjs');
   assertSource(commit, git(['ls-remote', 'origin', 'refs/heads/main']).split(/\s+/)[0], git(['status', '--porcelain', '--untracked-files=all']));

@@ -77,11 +77,11 @@ export function readEstimatedTimings(content: unknown, targets: Target[], song: 
   return result;
 }
 
-export async function generateTextAlignment(track: Track, config: AIConfig, signal: AbortSignal, options: { stage?(message: string): void; request?: Requester } = {}): Promise<AlignmentResult> {
+export async function generateTextAlignment(track: Track, config: AIConfig, signal: AbortSignal, options: { stage?(message: string): void; request?: Requester; lineIds?: number[] } = {}): Promise<AlignmentResult> {
   const url = normalizeAIUrl(config.url);
   if (!config.key.trim() || !config.model.trim()) throw new Error('请保存现有聊天 AI 服务、模型和 API Key。');
   const lyrics = track.lyrics.map((line) => ({ ...line }));
-  const targets = textAlignmentTargets(track);
+  const targets = textAlignmentTargets(track).filter((target) => !options.lineIds || options.lineIds.includes(target.id));
   const song = { title: track.title, artist: track.artist, album: track.album };
   let matched = 0;
   for (let offset = 0; offset < targets.length;) {
