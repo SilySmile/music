@@ -13,11 +13,11 @@ async function main() {
     const page = await app.firstWindow(); const errors = []; page.on('pageerror', (error) => errors.push(error.message));
     await page.waitForSelector('.empty-state');
     await app.evaluate(({ net }, textMode) => {
-      const originalFetch = net.fetch.bind(net); globalThis.manualTimingCalls = []; globalThis.failTiming = false; globalThis.delayTiming = false;
+      const originalFetch = net.fetch.bind(net); globalThis.manualTimingCalls = []; globalThis.failTiming = false; globalThis.delayTiming = false; globalThis.partialTiming = false;
       net.fetch = async (url, options) => {
         if (String(url) === 'https://api.deepseek.com/chat/completions') {
           const body = JSON.parse(options.body); const data = JSON.parse(body.messages[1].content);
-          globalThis.manualTimingCalls.push({ type: 'text', lines: data.lines.map((line) => line.id) });
+          globalThis.manualTimingCalls.push({ type: 'text', lines: data.lines.map((line) => line.id), bounds: data.lines.map(({ start, end }) => [start, end]) });
           if (globalThis.delayTiming) await new Promise((resolve) => setTimeout(resolve, 1000));
           if (globalThis.failTiming) return new Response('{}', { status: 503 });
           const lines = data.lines.map((line) => ({ id: line.id, source: line.source, singing: '模拟唱法：唱完后留间奏，未经音频验证', singingEnd: Math.min(line.end, line.start + 3), instrumentalAfter: Math.min(line.end, line.start + 3) < line.nextStart, words: line.units.map((text, i) => ({ text, duration: i === line.units.length - 1 ? 3 : 1, pauseBefore: i ? .2 : 0 })) }));
@@ -28,6 +28,7 @@ async function main() {
           if (globalThis.delayTiming) await new Promise((resolve) => setTimeout(resolve, 1000));
           if (globalThis.failTiming) return new Response('{}', { status: 503 });
           const words = [{ word: '你', start: 1, end: 2 }, { word: '好', start: 3, end: 4 }, { word: '再', start: 7, end: 8 }, { word: '见', start: 9, end: 10 }];
+          if (globalThis.partialTiming) words[0].word = '错';
           return new Response(JSON.stringify({ words }), { status: 200 });
         }
         if (/^https?:/.test(String(url))) throw new Error('Unexpected external network in isolated lyric editor test');
@@ -85,7 +86,7 @@ async function main() {
     assert.equal(saved.metadata.lyrics[0].endTime, 4);
     assert.equal(saved.metadata.lyrics[0].words.at(-1).endTime, 4);
     await page.waitForFunction(async () => (await window.tingyuDesktop.getSnapshot()).lineEnd === 4);
-    await dialog.getByRole('button', { name: 'AI 生成本句', exact: true }).click();
+    await dialog.getByRole('button', { name: /^AI (?:重新)?生成本句$/ }).click();
     await dialog.getByText('AI 生成完成，可继续调整；点击“保存歌词时间”后生效。', { exact: true }).waitFor();
     assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), 1);
     assert.deepEqual((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id).metadata.lyrics, saved.metadata.lyrics, 'AI generation is a draft until explicit save');
@@ -106,6 +107,31 @@ async function main() {
     await dialog.getByRole('button', { name: 'AI 生成整首缺失时间', exact: true }).click();
     await dialog.getByText('当前范围已有逐字时间或没有演唱文本，已跳过，未调用 AI。', { exact: true }).waitFor();
     assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), 2, 'all-valid songs must skip both text and audio paid calls');
+    await dialog.getByLabel('本句唱完时间', { exact: true }).fill('2.750');
+    await dialog.getByRole('button', { name: '保存歌词时间', exact: true }).click();
+    await dialog.getByText('逐字时间已保存，主窗口和桌面歌词已更新。', { exact: true }).waitFor();
+    saved = (await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id);
+    assert.equal(saved.metadata.lyrics[0].endTime, 2.75);
+    if (!textMode) await app.evaluate(() => { globalThis.partialTiming = true; });
+    await dialog.getByRole('button', { name: 'AI 重新生成整首', exact: true }).click();
+    await dialog.getByText(textMode ? 'AI 生成完成，可继续调整；点击“保存歌词时间”后生效。' : 'AI 已生成 1 句，1 句未匹配并保留原时间；可继续调整，保存后生效。', { exact: true }).waitFor();
+    assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), 3, 'regeneration must call AI even when every line already has valid word timing');
+    assert.deepEqual((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id).metadata.lyrics, saved.metadata.lyrics, 'regeneration must remain a draft until explicit save');
+    assert.equal(await dialog.getByLabel('本句唱完时间', { exact: true }).inputValue(), textMode ? '4.000' : '2.750', 'unmatched audio lines must retain their original timing');
+    if (textMode) assert.deepEqual(await app.evaluate(() => globalThis.manualTimingCalls[2].bounds[0]), [1, 7], 'wrong saved sung end must not constrain regenerated timing');
+    await dialog.getByRole('button', { name: '还原未保存修改', exact: true }).click();
+    assert.equal(await dialog.getByLabel('本句唱完时间', { exact: true }).inputValue(), '2.750', 'discarding regeneration must restore saved timing');
+    await app.evaluate(() => { globalThis.partialTiming = false; });
+    await dialog.getByRole('button', { name: 'AI 重新生成整首', exact: true }).click();
+    await dialog.getByText('AI 生成完成，可继续调整；点击“保存歌词时间”后生效。', { exact: true }).waitFor();
+    assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), 4);
+    if (textMode) assert.deepEqual(await app.evaluate(() => globalThis.manualTimingCalls[3].lines), [0, 1]);
+    await dialog.getByRole('button', { name: '保存歌词时间', exact: true }).click();
+    await dialog.getByText('逐字时间已保存，主窗口和桌面歌词已更新。', { exact: true }).waitFor();
+    saved = (await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id);
+    assert.equal(saved.metadata.lyrics[0].endTime, 4);
+    assert.equal(saved.metadata.lyrics[0].words.at(-1).endTime, 4);
+    assert.deepEqual(saved.metadata.lyrics.map((line) => line.translation), ['Hello', 'Goodbye']);
     await dialog.evaluate((element) => { element.scrollTop = 0; });
     await page.screenshot({ path: path.join(root, 'test-results', `lyric-settings-${textMode ? 'text' : 'audio'}-desktop.png`) });
     await page.setViewportSize({ width: 390, height: 844 });
@@ -113,12 +139,12 @@ async function main() {
     await page.screenshot({ path: path.join(root, 'test-results', `lyric-settings-${textMode ? 'text' : 'audio'}-mobile.png`) });
     await page.setViewportSize({ width: 1280, height: 800 });
     await app.evaluate(() => { globalThis.failTiming = true; });
-    await dialog.getByRole('button', { name: 'AI 生成本句', exact: true }).click();
+    await dialog.getByRole('button', { name: 'AI 重新生成整首', exact: true }).click();
     await dialog.getByText(/503/).waitFor();
-    assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), 3);
+    assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), 5);
     assert.deepEqual((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id).metadata.lyrics, saved.metadata.lyrics);
     await app.evaluate(() => { globalThis.failTiming = false; globalThis.delayTiming = true; });
-    await dialog.getByRole('button', { name: 'AI 生成本句', exact: true }).click();
+    await dialog.getByRole('button', { name: 'AI 重新生成整首', exact: true }).click();
     await page.waitForFunction(async () => document.querySelector('.timing-status')?.textContent.includes('正在'));
     await dialog.getByRole('button', { name: '取消生成', exact: true }).click();
     await dialog.getByText('生成已取消，未保存的调整保留。', { exact: true }).waitFor();
@@ -139,7 +165,7 @@ async function main() {
     const lyricDocument = await fs.readFile(path.join(directory, lrc), 'utf8');
     assert.match(lyricDocument, /<00:/); assert.match(lyricDocument, /\[x-end:00:04\.000\]/);
     assert.deepEqual(errors, []);
-    console.log(`PASS manual lyric settings (${textMode ? 'chat' : 'audio'}): legacy auto flag disabled, zero AI on startup/config save/import/restart, per-character editing, overlap refusal without overwrite, manual AI this-line and whole-song drafts, explicit save and Enhanced LRC/Chinese persistence, provider failure without automatic retry; isolated fixtures only`);
+    console.log(`PASS manual lyric settings (${textMode ? 'chat' : 'audio'}): zero automatic AI, per-character editing, manual current/missing/all regeneration, recomputation of saved words and wrong vocal ends, original preservation for unmatched lines/failure/cancel/discard, explicit save and Enhanced LRC/Chinese persistence; isolated fixtures only`);
   } finally { if (app) await app.close(); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

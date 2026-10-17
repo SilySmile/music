@@ -1,6 +1,7 @@
 import type { LyricLine, LyricWord, Track } from '../types';
 import { singingUnits } from './textAlignment';
 import { singingEnd, timedWords } from './lyricTiming';
+import { vocalLine } from './audioAlignment';
 
 export type WordTimeDraft = { text: string; start: string; end: string };
 export type LineTimeDraft = { start: string; end: string; words: WordTimeDraft[] };
@@ -28,6 +29,24 @@ export function changeSingingEnd(draft: LineTimeDraft, value: string): LineTimeD
   if (!value.trim() || !Number.isFinite(end) || end <= start || before <= start || !draft.words.some((word) => Number(word.end) > end)) return { ...draft, end: value };
   const scale = (time: string) => (start + (Number(time) - start) * (end - start) / (before - start)).toFixed(3);
   return { ...draft, end: value, words: draft.words.map((word) => ({ ...word, start: scale(word.start), end: scale(word.end) })) };
+}
+
+export function prepareLyricRegeneration(track: Pick<Track, 'lyrics' | 'duration'>, drafts: Record<number, LineTimeDraft> = {}, lineIds?: number[]): LyricLine[] {
+  const selected = (index: number) => (!lineIds || lineIds.includes(index)) && vocalLine(track.lyrics[index]);
+  const anchors = track.lyrics.map((line, index) => selected(index) && drafts[index] ? { ...line, time: drafts[index].start.trim() ? Number(drafts[index].start) : NaN } : line);
+  return anchors.map((line, index) => {
+    if (!selected(index)) return line;
+    const draft = drafts[index];
+    const previous = anchors.slice(0, index).filter((line) => line.time >= 0).at(-1)?.time ?? 0;
+    const boundary = lineTimeEnd({ ...track, lyrics: anchors }, index);
+    if (!Number.isFinite(line.time) || (line.time >= 0 && (line.time < previous || line.time >= boundary)) || (draft && line.time < 0)) throw new Error(`第 ${index + 1} 句开始时间无效，请先调整再重新生成。`);
+    // Saved AI ends may be wrong too. Only this editing session's changed end
+    // is a hard bound; otherwise re-evaluate the full original line interval.
+    const changedEnd = draft && draft.end !== createLineTimeDraft(track, index).end;
+    const endTime = changedEnd && draft.end.trim() ? Number(draft.end) : undefined;
+    if (changedEnd && (endTime === undefined || !Number.isFinite(endTime) || endTime <= line.time || endTime > boundary)) throw new Error(`第 ${index + 1} 句唱完时间无效，请先调整再重新生成。`);
+    return { ...line, words: undefined, endTime, wordTiming: undefined, timingNote: undefined };
+  });
 }
 export function applyLineTimeDraft(track: Pick<Track, 'lyrics' | 'duration'>, index: number, draft: LineTimeDraft): LyricLine {
   const line = track.lyrics[index];

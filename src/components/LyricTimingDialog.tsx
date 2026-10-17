@@ -6,7 +6,7 @@ import { generateWordAlignment } from '../lib/audioAI';
 import { needsWordAlignment, vocalLine } from '../lib/audioAlignment';
 import { timedWords } from '../lib/lyricTiming';
 import { sourceLibraryScope } from '../lib/storage';
-import { applyLineTimeDraft, changeSingingEnd, createLineTimeDraft, lineTimeEnd, timingFingerprint, type LineTimeDraft } from '../lib/lyricTimingEditor';
+import { applyLineTimeDraft, changeSingingEnd, createLineTimeDraft, lineTimeEnd, prepareLyricRegeneration, timingFingerprint, type LineTimeDraft } from '../lib/lyricTimingEditor';
 import TimedLyricText from './TimedLyricText';
 
 type Props = { tracks: Track[]; currentId: string; position: number; playing: boolean; config: AIConfig; blocked: boolean; onBusy(value: boolean): void; onSeek(time: number): void; onTogglePlay(): void; onPlayTrack(id: string): void; onSave(id: string, expected: string, lyrics: LyricLine[]): Promise<void>; onClose(): void };
@@ -51,6 +51,7 @@ function SongTimingEditor(props: Props & { track: Track; trackId: string; onSele
     const next = anchors.map((line, index) => entries[index] && index !== except ? applyLineTimeDraft({ ...track, lyrics: anchors }, index, entries[index]) : line);
     // A changed line anchor also bounds the preceding phrase.
     for (let index = 0; index < next.length; index++) {
+      if (index === except) continue;
       const words = timedWords(next[index]); const end = lineTimeEnd({ ...track, lyrics: next }, index);
       if ((next[index].endTime ?? 0) > end || words?.some((word) => (word.endTime ?? word.time) > Math.min(end, next[index].endTime ?? end))) throw new Error(`第 ${index + 1} 句与下一句时间重叠或超过唱完时间，请调整后保存。`);
     }
@@ -66,25 +67,23 @@ function SongTimingEditor(props: Props & { track: Track; trackId: string; onSele
     catch (error) { if (alive.current) setMessage(error instanceof Error ? error.message : '保存失败，原歌词保留。'); }
     finally { if (alive.current) setSaving(false); }
   }
-  async function generate(wholeSong: boolean) {
+  async function generate(mode: 'line' | 'missing' | 'all') {
     if (disabled || controller.current || !line) return;
     const abort = new AbortController(); controller.current = abort; setRunning(true); props.onBusy(true); setMessage('正在生成逐字时间…');
     try {
       await ensureCurrent();
-      const next = collect(false, wholeSong ? undefined : lineIndex);
-      const start = draft.start.trim() ? Number(draft.start) : NaN;
-      const endTime = draft.end.trim() ? Number(draft.end) : NaN;
-      if (!wholeSong && (!Number.isFinite(start) || start < (next.slice(0, lineIndex).filter((line) => line.time >= 0).at(-1)?.time ?? 0) || start >= lineTimeEnd({ ...track, lyrics: next }, lineIndex))) throw new Error('请先设置有效的本句开始时间，再生成逐字时间。');
-      if (!wholeSong && (!Number.isFinite(endTime) || endTime <= start || endTime > lineTimeEnd({ ...track, lyrics: next }, lineIndex))) throw new Error('请先设置有效的本句唱完时间，间奏不计入演唱时间。');
-      const input = { ...track, lyrics: next.map((line, index) => !wholeSong && index === lineIndex ? { ...line, time: start, endTime, words: undefined, wordTiming: undefined, timingNote: undefined } : line) };
-      if (wholeSong ? !needsWordAlignment(input) : !vocalLine(input.lyrics[lineIndex])) { setMessage('当前范围已有逐字时间或没有演唱文本，已跳过，未调用 AI。'); return; }
+      const next = mode === 'all' ? lyrics : collect(false, mode === 'line' ? lineIndex : undefined);
+      const input = { ...track, lyrics: mode === 'missing' ? next : prepareLyricRegeneration({ ...track, lyrics: next }, mode === 'line' ? { [lineIndex]: draft } : drafts, mode === 'line' ? [lineIndex] : undefined) };
+      if (!needsWordAlignment(input) || (mode === 'line' && !vocalLine(input.lyrics[lineIndex]))) { setMessage('当前范围已有逐字时间或没有演唱文本，已跳过，未调用 AI。'); return; }
       const options = { stage: (message: string) => { if (alive.current) setMessage(message); } };
-      const result = config.alignmentMode === 'audio' ? await generateWordAlignment(input, config, abort.signal, options) : await generateTextAlignment(input, { ...config, singingHint: hint }, abort.signal, { ...options, lineIds: wholeSong ? undefined : [lineIndex] });
+      const result = config.alignmentMode === 'audio' ? await generateWordAlignment(input, config, abort.signal, options) : await generateTextAlignment(input, { ...config, singingHint: hint }, abort.signal, { ...options, lineIds: mode === 'line' ? [lineIndex] : undefined });
       abort.signal.throwIfAborted(); await ensureCurrent();
       if (!alive.current) return;
-      const generated = wholeSong ? result.lyrics : next.map((line, index) => index === lineIndex ? result.lyrics[index] : line);
-      if (!result.matched || (!wholeSong && !timedWords(generated[lineIndex]))) { setMessage('当前范围没有可生成的句子：已有逐字时间会跳过，未定时歌词需先设置本句开始时间。'); return; }
-      setLyrics(generated); setDrafts({}); setAIDirty(true); setMessage('AI 生成完成，可继续调整；点击“保存歌词时间”后生效。');
+      const replaced = new Set(result.lyrics.flatMap((line, index) => (mode !== 'line' || index === lineIndex) && !timedWords(input.lyrics[index]) && timedWords(line) ? [index] : []));
+      if (!replaced.size) { setMessage('当前范围没有可生成的句子：未匹配的原时间已保留，聊天生成需先设置本句开始时间。'); return; }
+      const generated = next.map((line, index) => replaced.has(index) ? result.lyrics[index] : line);
+      const remaining = input.lyrics.filter((line, index) => (mode !== 'line' || index === lineIndex) && vocalLine(line) && !timedWords(line)).length - replaced.size;
+      setLyrics(generated); setDrafts(mode === 'all' ? Object.fromEntries(Object.entries(drafts).filter(([index]) => !replaced.has(Number(index)))) : {}); setAIDirty(true); setMessage(remaining > 0 ? `AI 已生成 ${replaced.size} 句，${remaining} 句未匹配并保留原时间；可继续调整，保存后生效。` : 'AI 生成完成，可继续调整；点击“保存歌词时间”后生效。');
     } catch (error) { if (alive.current) setMessage(abort.signal.aborted ? '生成已取消，未保存的调整保留。' : error instanceof Error ? error.message : '生成失败，原歌词保留。'); }
     finally { if (controller.current === abort) controller.current = null; if (alive.current) { setRunning(false); props.onBusy(false); } }
   }
@@ -103,7 +102,7 @@ function SongTimingEditor(props: Props & { track: Track; trackId: string; onSele
         <div className="timing-playback"><span>{canSample ? `当前播放时间：${props.position.toFixed(3)} 秒` : '播放这首歌后，可边听边取当前时间。'}</span><button className="button outline" onClick={() => canSample ? props.onTogglePlay() : props.onPlayTrack(track.id)}>{canSample && props.playing ? <Pause size={14} /> : <Play size={14} />}{canSample ? props.playing ? '暂停当前歌曲' : '播放当前歌曲' : '播放所选歌曲'}</button></div>
         {!timedWords(line) && <p className="field-help">当前显示按原句时间均分的可编辑草稿；保存前仍沿用原歌词。</p>}
         <div className="word-time-list"><div className="word-time-heading"><span>字 / 词</span><span>开始（秒）</span><span>结束（秒）</span><span>校准</span></div>{draft.words.map((word, index) => <div className="word-time-row" key={index} data-word-index={index}><strong>{word.text}</strong><input aria-label={`第${index + 1}字开始时间`} type="number" min="0" step="0.001" disabled={disabled} value={word.start} onChange={(event) => editWord(index, 'start', event.target.value)} /><input aria-label={`第${index + 1}字结束时间`} type="number" min="0" step="0.001" disabled={disabled} value={word.end} onChange={(event) => editWord(index, 'end', event.target.value)} /><div><button title="用当前播放时间作为开始" aria-label={`第${index + 1}字取当前开始时间`} disabled={disabled || !canSample} onClick={() => editWord(index, 'start', props.position.toFixed(3))}><Clock3 size={13} />起</button><button title="用当前播放时间作为结束" aria-label={`第${index + 1}字取当前结束时间`} disabled={disabled || !canSample} onClick={() => editWord(index, 'end', props.position.toFixed(3))}><Clock3 size={13} />止</button><button title="跳到这个字的开始" aria-label={`定位第${index + 1}字`} disabled={!canSample || !Number.isFinite(Number(word.start))} onClick={() => props.onSeek(Number(word.start))}><Play size={13} /></button></div></div>)}</div>
-        <div className="timing-ai-panel"><h3><Bot size={16} />AI 生成（手动）</h3><p className="field-help">使用已配置的 {config.alignmentMode === 'audio' ? config.audioModel || 'whisper-1' : config.model}。{config.alignmentMode === 'audio' ? '识别时会上传当前歌曲音频。' : '仅发送歌词和唱法提示，结果标注 AI 估算时间。'}点击生成可能计费。</p>{config.alignmentMode !== 'audio' && <label>唱法提示<textarea aria-label="歌词唱法提示" rows={2} maxLength={1200} disabled={running || saving} value={hint} onChange={(event) => setHint(event.target.value)} placeholder="例如：逗号换气，末字拖音" /></label>}<div className="timing-actions"><button className="button outline" disabled={disabled || !config.key} onClick={() => void generate(false)}><Bot size={14} />AI 生成本句</button><button className="button outline" disabled={disabled || !config.key} onClick={() => void generate(true)}>AI 生成整首缺失时间</button>{running && <button className="button outline" onClick={() => controller.current?.abort()}><LoaderCircle className="spin" size={14} />取消生成</button>}</div>{!config.key && <p className="field-help">请先在偏好设置中保存 AI 服务、模型和密钥。</p>}</div>
+        <div className="timing-ai-panel"><h3><Bot size={16} />AI 生成（手动）</h3><p className="field-help">使用已配置的 {config.alignmentMode === 'audio' ? config.audioModel || 'whisper-1' : config.model}。{config.alignmentMode === 'audio' ? '识别时会上传当前歌曲音频。' : '仅发送歌词和唱法提示，结果标注 AI 估算时间。'}点击生成可能计费。</p>{config.alignmentMode !== 'audio' && <label>唱法提示<textarea aria-label="歌词唱法提示" rows={2} maxLength={1200} disabled={running || saving} value={hint} onChange={(event) => setHint(event.target.value)} placeholder="例如：逗号换气，末字拖音" /></label>}<p className="field-help">重新生成会重算已有逐字时间和唱完位置，保留歌词原文与中文。本次手动修改的开始、唱完时间仍作为约束；生成结果保存后生效。</p><div className="timing-actions"><button className="button outline" disabled={disabled || !config.key} onClick={() => void generate('line')}><Bot size={14} />{timedWords(line) ? 'AI 重新生成本句' : 'AI 生成本句'}</button><button className="button outline" disabled={disabled || !config.key} onClick={() => void generate('missing')}>AI 生成整首缺失时间</button><button className="button outline" disabled={disabled || !config.key} onClick={() => void generate('all')}>AI 重新生成整首</button>{running && <button className="button outline" onClick={() => controller.current?.abort()}><LoaderCircle className="spin" size={14} />取消生成</button>}</div>{!config.key && <p className="field-help">请先在偏好设置中保存 AI 服务、模型和密钥。</p>}</div>
       </>}
     </>}
     {conflict && <p className="timing-error" role="alert">歌词已在别处更新，请还原未保存修改后继续，避免覆盖新歌词。</p>}

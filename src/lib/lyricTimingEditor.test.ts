@@ -1,9 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { applyLineTimeDraft, changeSingingEnd, createLineTimeDraft, timingFingerprint } from './lyricTimingEditor';
+import { applyLineTimeDraft, changeSingingEnd, createLineTimeDraft, prepareLyricRegeneration, timingFingerprint } from './lyricTimingEditor';
+import { textAlignmentTargets } from './textAlignment';
 import { parseLyrics } from './lyrics';
 import { serializeLyrics } from './exporter';
 const track = { duration: 12, lyrics: [{ time: 1, text: '你，好啊', translation: 'Hello' }, { time: 7, text: '再见' }] };
 describe('manual lyric timing drafts', () => {
+  it('recalculates ready lyrics and wrong saved sung ends without changing source lyrics or Chinese', () => {
+    const saved = { ...track, lyrics: track.lyrics.map((line) => ({ ...line, endTime: line.time + 1, words: [{ text: line.text, time: line.time, endTime: line.time + 1 }], wordTiming: 'estimated' as const, timingNote: '旧估算' })) };
+    const before = timingFingerprint(saved.lyrics);
+    const lyrics = prepareLyricRegeneration(saved);
+    expect(textAlignmentTargets({ ...saved, lyrics }).map(({ id, end }) => [id, end])).toEqual([[0, 7], [1, 12]]);
+    expect(lyrics[0]).toMatchObject({ time: 1, text: '你，好啊', translation: 'Hello' });
+    expect(lyrics.every((line) => !line.words && line.endTime === undefined && !line.wordTiming && !line.timingNote)).toBe(true);
+    expect(timingFingerprint(saved.lyrics)).toBe(before);
+    expect(prepareLyricRegeneration(saved, {}, [0])[1]).toBe(saved.lyrics[1]);
+  });
+  it('uses only newly edited phrase bounds during regeneration and bypasses corrupt old word times', () => {
+    const saved = { ...track, lyrics: [{ ...track.lyrics[0], endTime: 20, words: [{ text: track.lyrics[0].text, time: 1, endTime: 20 }] }, track.lyrics[1]] };
+    expect(prepareLyricRegeneration(saved)[0].endTime).toBeUndefined();
+    const draft = createLineTimeDraft(saved, 0); draft.start = '2'; draft.end = '4';
+    const lyrics = prepareLyricRegeneration(saved, { 0: draft });
+    expect(lyrics[0]).toMatchObject({ time: 2, endTime: 4, words: undefined });
+    expect(textAlignmentTargets({ ...saved, lyrics })[0]).toMatchObject({ start: 2, end: 4, nextStart: 7 });
+    expect(() => prepareLyricRegeneration(saved, { 0: { ...draft, end: '8' } })).toThrow('唱完时间');
+    expect(() => prepareLyricRegeneration(saved, { 0: { ...draft, start: '' } })).toThrow('开始时间');
+  });
   it('keeps a three-second instrumental gap and compresses only overflowing draft words', () => {
     const initial = createLineTimeDraft(track, 0);
     const draft = changeSingingEnd(initial, '4.000');
