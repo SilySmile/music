@@ -183,6 +183,10 @@ input[type=checkbox]{accent-color:#8b9e74;width:14px;height:14px;flex-shrink:0}
 .alignment-actions{display:flex;gap:18px;flex-wrap:wrap}
 .timed-line,.timed-word{position:relative;display:inline-block;white-space:pre}
 .timed-word-highlight{position:absolute;inset:0;color:var(--accent);white-space:pre;pointer-events:none}
+.timed-word-highlight::before{content:attr(data-text)}
+.lyric-line .timed-line{max-width:100%;white-space:pre-wrap}
+.lyric-line .timed-line>.timed-word-highlight{white-space:pre-wrap}
+.audio-alignment-settings .audio-model-field{display:block}
 .lyric-line.active .timed-lyric-text{color:#8c9586}
 .desktop-lyric-lines .timed-lyric-text{display:block;white-space:pre;-webkit-text-stroke:.6px #1a1f23;paint-order:stroke fill}
 .desktop-lyric-lines .timed-word-highlight{color:var(--desktop-highlight)}
