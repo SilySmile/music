@@ -17,6 +17,7 @@ exec systemd-run --unit=xianqiji-aligner --collect --wait --service-type=exec \
   --property="WorkingDirectory=$root/src" \
   --property="StandardOutput=append:$root/runtime/logs/server.log" \
   --property="StandardError=append:$root/runtime/logs/server.log" \
+  --setenv=PATH=/opt/xianqiji-aligner/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib \
   --setenv="TMPDIR=$root/runtime/tmp" \
   --setenv=OMP_NUM_THREADS=4 --setenv=MKL_NUM_THREADS=4 \
   --setenv=TOKENIZERS_PARALLELISM=false --setenv=HF_HUB_OFFLINE=1 \

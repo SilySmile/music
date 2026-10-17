@@ -130,4 +130,5 @@ local-aligner/
 - [Microsoft WSL 安装、导入与停止命令](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)
 - [Microsoft WSL 后台服务生命周期说明](https://learn.microsoft.com/en-us/windows/wsl/systemd)
 - [systemd-run 等待服务退出选项](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html)
+- [NVIDIA WSL CUDA 与显卡工具路径说明](https://docs.nvidia.com/cuda/archive/13.0.0/wsl-user-guide/index.html)
 - [Qwen 官方模型说明](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
