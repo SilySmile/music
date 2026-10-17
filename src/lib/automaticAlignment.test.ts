@@ -5,7 +5,7 @@ import { parseLyrics } from './lyrics';
 import { alignSpeechWords, type AlignmentResult } from './audioAlignment';
 import type { Track } from '../types';
 const createRequests = createRequire(import.meta.url)('../../electron/audio-alignment.cjs');
-const config = { url: 'https://audio.example.test/v1', model: 'text', audioModel: 'whisper-1', key: 'local-fake-secret', autoAlign: true };
+const config = { url: 'https://audio.example.test/v1', model: 'text', audioModel: 'whisper-1', key: 'local-fake-secret', autoAlign: true, alignmentMode: 'audio' as const };
 const song = (id: string): Track => ({ id, title: id, artist: 'Artist', album: '', format: 'mp3', duration: 20, audio: new Blob(['audio']), lyrics: [{ time: 1, text: 'Hello world', translation: '你好世界' }], favorite: false, addedAt: 1 });
 function fixture() {
   const saved = new Map<string, string>();

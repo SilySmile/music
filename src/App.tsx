@@ -114,7 +114,7 @@ export default function App() {
   const [aiConfig, setAIConfig] = useState<AIConfig>(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('tingyu-ai-config') || '{}');
-      return { url: typeof stored.url === 'string' ? stored.url : defaultAIConfig.url, model: typeof stored.model === 'string' ? stored.model : defaultAIConfig.model, audioModel: typeof stored.audioModel === 'string' ? stored.audioModel : 'whisper-1', autoAlign: typeof stored.autoAlign === 'boolean' ? stored.autoAlign : undefined, key: '' };
+      return { url: typeof stored.url === 'string' ? stored.url : defaultAIConfig.url, model: typeof stored.model === 'string' ? stored.model : defaultAIConfig.model, audioModel: typeof stored.audioModel === 'string' ? stored.audioModel : 'whisper-1', autoAlign: typeof stored.autoAlign === 'boolean' ? stored.autoAlign : undefined, alignmentMode: stored.alignmentMode === 'audio' ? 'audio' : 'text', singingHint: typeof stored.singingHint === 'string' ? stored.singingHint : '', key: '' };
     } catch { return { ...defaultAIConfig }; }
   });
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -403,7 +403,7 @@ export default function App() {
     const line = current?.lyrics[activeLine];
     const next = current?.lyrics[activeLine + 1];
     const previous = current?.lyrics[activeLine - 1];
-    bridge.updateSnapshot({ title: current?.title ?? '', artist: current?.artist ?? '', text: line?.text ?? '', translation: line?.translation ?? '', nextText: next?.text ?? (current?.lyrics.length && !current.lyrics.some((item) => item.time >= 0) ? '纯文本歌词，请在详情页阅读' : ''), previousText: previous?.text ?? '', lineIndex: Math.max(0, activeLine), lineStart: Math.max(0, line?.time ?? 0), lineEnd: next && next.time >= 0 ? next.time : duration, words: line ? timedWords(line) : undefined, advancing: nativeActive ? playing : audioAdvancing, playbackRate: audioRef.current?.playbackRate ?? 1, position, duration, playing, showTranslation, favorite: current?.favorite ?? false, hasTrack: !!current, volume, mode });
+    bridge.updateSnapshot({ title: current?.title ?? '', artist: current?.artist ?? '', text: line?.text ?? '', translation: line?.translation ?? '', nextText: next?.text ?? (current?.lyrics.length && !current.lyrics.some((item) => item.time >= 0) ? '纯文本歌词，请在详情页阅读' : ''), previousText: previous?.text ?? '', lineIndex: Math.max(0, activeLine), lineStart: Math.max(0, line?.time ?? 0), lineEnd: next && next.time >= 0 ? next.time : duration, words: line ? timedWords(line) : undefined, wordTiming: line?.wordTiming, advancing: nativeActive ? playing : audioAdvancing, playbackRate: audioRef.current?.playbackRate ?? 1, position, duration, playing, showTranslation, favorite: current?.favorite ?? false, hasTrack: !!current, volume, mode });
   }, [current, activeLine, position, duration, playing, audioAdvancing, nativeActive, showTranslation, volume, mode]);
 
   useEffect(() => window.tingyuDesktop?.onControl((action) => {
@@ -526,7 +526,7 @@ export default function App() {
     {current?.lyrics.length ? <>
       <div className="lyric-top-space" />
       {current.lyrics.map((line, index) => <button key={`${line.time}-${index}`} className={`lyric-line ${index === activeLine ? 'active' : ''}`} data-active={index === activeLine} onClick={() => { if (line.time >= 0) seek(line.time); }} disabled={line.time < 0}>
-        <TimedLyricText text={line.text} words={timedWords(line)} position={position} active={index === activeLine} />{showTranslation && line.translation && <small>{line.translation}</small>}
+        <TimedLyricText text={line.text} words={timedWords(line)} position={position} active={index === activeLine} lineStart={line.time} lineEnd={current.lyrics[index + 1]?.time ?? duration} />{line.wordTiming === 'estimated' && <small className="word-timing-note" title={line.timingNote}>AI 估算时间 · 未经音频校准</small>}{showTranslation && line.translation && <small>{line.translation}</small>}
       </button>)}
       <div className="lyric-top-space" />
     </> : <div className="lyric-empty"><Disc3 size={36} /><p>{current ? '这首歌还没有歌词' : '每一首歌，都有回响'}</p><small>{current ? '导入同名 LRC，字句随音乐流动' : '选一首喜欢的，开始聆听'}</small></div>}

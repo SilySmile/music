@@ -1,5 +1,9 @@
 import type { LyricLine, LyricWord } from '../types';
 
+export function wordTimingMetadata(line: LyricLine): Pick<LyricLine, 'wordTiming' | 'timingNote'> {
+  return line.wordTiming === 'estimated' && timedWords(line) ? { wordTiming: 'estimated', ...(typeof line.timingNote === 'string' ? { timingNote: line.timingNote.slice(0, 600) } : {}) } : {};
+}
+
 // Only use timings that cover the displayed source text, in source order.
 export function timedWords(line: Pick<LyricLine, 'time' | 'text' | 'words'>): LyricWord[] | undefined {
   const words = line.words;

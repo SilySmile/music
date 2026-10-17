@@ -40,16 +40,17 @@ describe('real word timing', () => {
     expect(lines[0].words?.[0]).toEqual({ time: 1.5, endTime: 2.5, text: 'Hi' });
     expect(lines[1].words?.[0]).toEqual({ time: 61.5, endTime: 62.5, text: 'Hi' });
   });
-  it('does not invent durations for ordinary LRC or the final unbounded word', () => {
+  it('uses the default linear fallback for ordinary LRC and does not stretch the final unbounded word', () => {
     const [plain] = parseLyrics('[00:01.00]Plain line');
     expect(timedWords(plain)).toBeUndefined();
     expect(native.timedWords(plain)).toBeUndefined();
     const [enhanced] = parseLyrics('[00:01]<00:01>Hello <00:02>world');
     expect(wordProgress(enhanced.words![1], 1.9)).toBe(0);
     expect(wordProgress(enhanced.words![1], 2)).toBe(100);
-    const markup = renderToStaticMarkup(createElement(TimedLyricText, { text: plain.text, position: 1.1, active: true }));
+    const markup = renderToStaticMarkup(createElement(TimedLyricText, { text: plain.text, position: 2, active: true, lineStart: 1, lineEnd: 3 }));
     expect(markup).toContain('data-timing="line"');
-    expect(markup).not.toContain('clip-path');
+    expect(markup).toContain('inset(0 50% 0 0)');
+    expect(markup).not.toContain('class="timed-word"');
   });
   it('rejects corrupt or mismatched word data without rendering timing markers', () => {
     expect(parseLyrics('[00:01]<00:03>Hi<00:02>there')[0]).toEqual({ time: 1, text: 'Hithere' });

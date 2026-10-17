@@ -1,5 +1,5 @@
 export type LyricWord = { time: number; endTime?: number; text: string };
-export type LyricLine = { time: number; text: string; translation?: string; words?: LyricWord[] };
+export type LyricLine = { time: number; text: string; translation?: string; words?: LyricWord[]; wordTiming?: 'estimated'; timingNote?: string };
 
 export type Track = {
   id: string;
@@ -39,6 +39,7 @@ export type DesktopSnapshot = {
   lineStart: number;
   lineEnd: number;
   words?: LyricWord[];
+  wordTiming?: 'estimated';
   advancing?: boolean;
   playbackRate?: number;
   position: number;
@@ -52,7 +53,7 @@ export type DesktopSnapshot = {
 };
 export type DesktopAction = 'play-pause' | 'previous' | 'next' | 'settings' | 'show-main' | 'minimize' | 'quit';
 export type NetworkRequest = { service: 'lyrics' | 'translation'; params: Record<string, string> };
-export type AIConfig = { url: string; model: string; key: string; audioModel?: string; autoAlign?: boolean };
+export type AIConfig = { url: string; model: string; key: string; audioModel?: string; autoAlign?: boolean; alignmentMode?: 'text' | 'audio'; singingHint?: string };
 export type AudioAIRequest = { id: string; url: string; key: string; model: string; filename: string; type: string; bytes: Uint8Array; language?: string; prompt?: string };
 export type ShortcutConfig = { enabled: boolean; bindings: Record<string, string>; status: Record<string, 'ok' | 'conflict' | 'disabled'>; path: string };
 export type AIRequest = { url: string; key: string; body: Record<string, unknown> };

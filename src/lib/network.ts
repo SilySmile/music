@@ -33,8 +33,8 @@ export const serviceRequest: JsonRequester = async (request, signal) => {
 export function normalizeAIUrl(value: string): string {
   const url = new URL(value.trim());
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('请使用不含密码或参数的 HTTPS 接口地址。');
-  url.pathname = url.pathname.replace(/\/+$/, '');
-  if (!url.pathname.endsWith('/chat/completions')) url.pathname += '/chat/completions';
+  const base = url.pathname.replace(/\/+$/, '');
+  url.pathname = base.endsWith('/chat/completions') ? base : `${base}/chat/completions`;
   return url.href;
 }
 

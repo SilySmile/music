@@ -8,14 +8,15 @@ export type AlignmentResult = { lyrics: LyricLine[]; matched: number; unmatched:
 export const normalizeSpeechText = (text: string) => text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 export const vocalLine = (line: LyricLine) => !!normalizeSpeechText(line.text) && !/^\s*(?:作[词曲]|编曲|词|曲|制作人|演唱|歌手|专辑|歌名|lyrics?|music|arrang(?:er|ement)|vocal|producer)\s*[:：]/i.test(line.text);
 export const needsWordAlignment = (track: Pick<Track, 'lyrics'>) => track.lyrics.some((line) => vocalLine(line) && !timedWords(line));
-export function alignmentSignature(track: Pick<Track, 'id' | 'lyrics'>, config: Pick<AIConfig, 'url' | 'audioModel'>) {
-  return Array.from(sha256(new TextEncoder().encode(JSON.stringify([track.id, normalizeAudioAIUrl(config.url), config.audioModel || 'whisper-1', track.lyrics.map(({ time, text }) => [time, text])]))), (byte) => byte.toString(16).padStart(2, '0')).join('');
+export function alignmentSignature(track: Pick<Track, 'id' | 'lyrics'>, config: Pick<AIConfig, 'url' | 'audioModel' | 'model' | 'alignmentMode' | 'singingHint'>) {
+  const audio = config.alignmentMode === 'audio';
+  return Array.from(sha256(new TextEncoder().encode(JSON.stringify([track.id, audio ? normalizeAudioAIUrl(config.url) : normalizeAIUrl(config.url), audio ? config.audioModel || 'whisper-1' : [config.model, config.singingHint || ''], track.lyrics.map(({ time, text }) => [time, text])]))), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 export function normalizeAudioAIUrl(value: string) {
   const url = new URL(normalizeAIUrl(value));
-  url.pathname = url.pathname.replace(/\/chat\/completions$/, '');
-  if (url.hostname === 'api.openai.com' && !url.pathname.replace(/\//g, '')) url.pathname = '/v1';
-  url.pathname += '/audio/transcriptions';
+  let base = url.pathname.replace(/\/chat\/completions$/, '').replace(/\/+$/, '');
+  if (url.hostname === 'api.openai.com' && !base) base = '/v1';
+  url.pathname = `${base}/audio/transcriptions`;
   return url.href;
 }
 export function validateAudioAI(config: AIConfig) {

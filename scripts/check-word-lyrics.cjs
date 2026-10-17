@@ -56,14 +56,14 @@ async function main() {
     await page.evaluate(() => window.tingyuDesktop.setStyle({ layout: 'horizontal' }));
     await overlay.waitForSelector('.desktop-layout-horizontal');
     await overlay.screenshot({ path: path.join(root, 'test-results/word-lyrics-horizontal.png'), omitBackground: true });
-    // Real IPC path: plain LRC has no fake within-line animation.
+    // Ordinary LRC retains the original linear sweep by default.
     await page.evaluate(async () => { const s = await window.tingyuDesktop.getSnapshot(); window.tingyuDesktop.updateSnapshot({ ...s, words: undefined, playing: false }); });
     await overlay.waitForSelector('.desktop-primary-line [data-timing="line"]');
-    assert.equal(await overlay.locator('.timed-word-highlight').count(), 0);
-    const plain = await overlay.locator('.desktop-primary-line .timed-lyric-text').evaluate((node) => getComputedStyle(node).color);
-    assert.equal(plain, 'rgb(255, 220, 114)');
+    assert.equal(await overlay.locator('.timed-word').count(), 0);
+    const linear = await overlay.locator('.desktop-primary-line .timed-line .timed-word-highlight').evaluate((node) => node.style.clipPath);
+    assert.ok(linear.includes('inset('), linear);
     assert.deepEqual(errors, []);
-    console.log('PASS YRC picker, source metadata, enhanced LRC persistence, real audio clock, IPC words, uneven per-word highlights, pause, seek, horizontal / vertical layouts and honest line-only fallback');
+    console.log('PASS YRC picker, source metadata, enhanced LRC persistence, real audio clock, IPC words, uneven per-word highlights, pause, seek, horizontal / vertical layouts and default linear line sweep');
     const closed = app.waitForEvent('close');
     await page.evaluate(() => window.tingyuDesktop.control('quit'));
     await closed; app = undefined;

@@ -1,6 +1,8 @@
 import type { AIConfig, Track } from '../types';
 import { alignmentSignature, needsWordAlignment, validateAudioAI, type AlignmentResult } from './audioAlignment';
 import { generateWordAlignment } from './audioAI';
+import { generateTextAlignment } from './textAlignment';
+import { normalizeAIUrl } from './network';
 
 export type AutoAlignmentState = { running: boolean; checked: number; skipped: number; generated: number; partial: number; failed: number; message: string };
 export const emptyAutoAlignment: AutoAlignmentState = { running: false, checked: 0, skipped: 0, generated: 0, partial: 0, failed: 0, message: '' };
@@ -14,7 +16,8 @@ export async function runAutomaticAlignment(options: { tracks: Track[]; config: 
     for (const track of tracks) {
       signal.throwIfAborted(); state.checked++;
       if (!needsWordAlignment(track)) { state.skipped++; continue; }
-      validateAudioAI(config);
+      if (config.alignmentMode === 'audio') validateAudioAI(config);
+      else { normalizeAIUrl(config.url); if (!config.key.trim() || !config.model.trim()) throw new Error('请保存聊天 AI 服务、模型和 API Key。'); }
       const key = `audio-word-alignment-v1|${alignmentSignature(track, config)}`;
       let previous: { status?: string } | undefined;
       try { previous = JSON.parse(await cache.get(key) || 'null'); } catch { /* A corrupt checkpoint must not start another paid call. */ previous = { status: 'unknown' }; }
@@ -35,7 +38,7 @@ export async function runAutomaticAlignment(options: { tracks: Track[]; config: 
       signal.throwIfAborted();
       emit(`正在生成逐字歌词 ${state.checked} / ${tracks.length} · ${track.title}`);
       try {
-        const result = await (options.generate || generateWordAlignment)(track, config, signal, { stage: (text) => emit(`${track.title} · ${text}`) });
+        const result = await (options.generate || (config.alignmentMode === 'audio' ? generateWordAlignment : generateTextAlignment))(track, config, signal, { stage: (text) => emit(`${track.title} · ${text}`) });
         signal.throwIfAborted();
         if (result.matched) { await options.save(track, result); state.generated++; }
         if (result.unmatched) state.partial++;

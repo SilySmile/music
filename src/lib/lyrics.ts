@@ -58,6 +58,7 @@ export function parseLyrics(source: string): LyricLine[] {
       previous.translation = [previous.translation, entry.text].filter(Boolean).join(' / ');
     } else merged.push({ ...entry });
   }
+  if (/\[x-timing:estimated\]/i.test(source)) for (const line of merged) if (line.words) line.wordTiming = 'estimated';
   return merged;
 }
 

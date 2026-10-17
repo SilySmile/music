@@ -68,6 +68,13 @@ describe('automatic private source upload', () => {
     expect(planSourceUpload(track, undefined, record({ ...track, album: 'Different' })).action).toBe('conflict');
     expect(planSourceUpload(track, 'a'.repeat(64), { ...record(track), cover: { sha256: 'b'.repeat(64), size: 1, type: 'image/jpeg' } }).action).toBe('conflict');
   });
+  it('retains estimate labels and singing notes when supplementing missing remote timing', () => {
+    const track = song();
+    const estimated: Track = { ...track, lyrics: [{ ...track.lyrics[0], words: [{ time: 0, endTime: .8, text: 'Light' }], wordTiming: 'estimated', timingNote: '拖音，未经录音验证' }] };
+    const plan = planSourceUpload(track, undefined, record(estimated));
+    expect(plan.track.lyrics[0]).toEqual(estimated.lyrics[0]);
+    expect(sourceSyncTrigger([estimated])).not.toBe(sourceSyncTrigger([{ ...estimated, lyrics: estimated.lyrics.map(({ wordTiming: _kind, timingNote: _note, ...line }) => line) }]));
+  });
   it('fills only missing translations and does not replace richer remote lyrics with an old local copy', async () => {
     const source = fixture(); const track = song(); source.remote.set(track.id, record(track));
     const missing = { ...track, lyrics: [{ time: 0, text: 'Light' }] };

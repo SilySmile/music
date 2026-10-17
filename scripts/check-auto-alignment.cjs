@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 
 async function main() {
   const root = path.resolve(__dirname, '..');
+  const textMode = process.argv.includes('--text');
   const profile = path.join(root, 'test-results', `auto-alignment-${Date.now()}`);
   const env = { ...process.env, TINGYU_TEST: '1', TINGYU_TEST_DATA: profile };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -23,12 +24,22 @@ async function main() {
       await window.tingyuDesktop.patchLibraryTrack(id, { lyrics: record.metadata.lyrics.map((line) => ({ ...line, words: [{ time: line.time, endTime: line.time + 1, text: line.text }] })) });
     }, readyId);
     await page.reload(); await page.waitForSelector('.track-row');
-    await app.evaluate(({ net }, fixtures) => {
+    await app.evaluate(({ net }, { fixtures, textMode }) => {
       const originalFetch = net.fetch.bind(net);
       globalThis.audioCalls = [];
       globalThis.audioRequests = 0;
       net.fetch = async (url, options) => {
-        if (String(url) === 'https://alignment.example.test/v1/audio/transcriptions') {
+        if (textMode && String(url) === 'https://api.deepseek.com/chat/completions') {
+          globalThis.audioRequests++;
+          const body = JSON.parse(options.body);
+          const data = JSON.parse(body.messages[1].content);
+          const fixture = fixtures.find((record) => record.metadata.title === data.song.title && data.lines.every((line) => record.metadata.lyrics[line.id]?.text === line.source));
+          if (!fixture) return new Response('{}', { status: 404 });
+          globalThis.audioCalls.push({ id: fixture.metadata.id, model: body.model, fileSize: 0, responseFormat: body.response_format.type });
+          const lines = data.lines.map((line) => ({ id: line.id, source: line.source, singing: '模拟唱法分析：短暂停顿、句尾拖音；未经录音验证', words: line.units.map((text, i) => ({ text, start: line.start + i / line.units.length * (line.end - line.start) * .8, end: line.start + (i + .7) / line.units.length * (line.end - line.start) * .8 })) }));
+          return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ song: data.song, lines }) } }] }), { status: 200 });
+        }
+        if (!textMode && String(url) === 'https://alignment.example.test/v1/audio/transcriptions') {
           globalThis.audioRequests++;
           const form = options.body; const prompt = form.get('prompt');
           const fixture = fixtures.find((record) => record.metadata.lyrics.map((line) => line.text).join('\n').slice(0, 2500) === prompt);
@@ -43,24 +54,29 @@ async function main() {
         if (/^https?:/.test(String(url))) throw new Error('Unexpected external network in isolated test');
         return originalFetch(url, options);
       };
-    }, original);
+    }, { fixtures: original, textMode });
     await page.getByRole('button', { name: '偏好设置', exact: true }).first().click();
-    await page.getByLabel('AI 服务地址', { exact: true }).fill('https://alignment.example.test/v1');
+    await page.getByLabel('AI 服务地址', { exact: true }).fill(textMode ? 'https://api.deepseek.com' : 'https://alignment.example.test/v1');
+    if (!textMode) await page.getByLabel('逐字时间生成方式', { exact: true }).selectOption('audio');
+    else assert.equal(await page.getByLabel('逐字时间生成方式', { exact: true }).inputValue(), 'text');
     await page.getByLabel('AI 模型名称', { exact: true }).fill('fixture-text-model');
     await page.getByLabel('翻译 API Key', { exact: true }).fill('fixture-not-a-real-key');
     assert.equal(await page.getByLabel('自动生成缺失的逐字歌词', { exact: true }).isChecked(), true);
     await page.getByRole('button', { name: '保存 AI 配置', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.alignment-status')?.textContent.includes('生成 2 首'), { timeout: 20000 });
     const calls = await app.evaluate(() => globalThis.audioCalls);
-    assert.equal(calls.length, 2); assert.ok(calls.every((call) => call.id !== readyId && call.model === 'whisper-1' && call.fileSize > 0 && call.responseFormat === 'verbose_json' && call.granularity === 'word'));
+    assert.equal(calls.length, 2); assert.ok(calls.every((call) => call.id !== readyId && (textMode ? call.model === 'fixture-text-model' && call.fileSize === 0 : call.model === 'whisper-1' && call.fileSize > 0 && call.responseFormat === 'verbose_json' && call.granularity === 'word')));
     const saved = await page.evaluate(() => window.tingyuDesktop.listLibraryTracks());
     for (const record of saved) {
       assert.ok(record.metadata.lyrics.every((line) => line.words?.length));
+      if (textMode && record.metadata.id !== readyId) { assert.ok(record.metadata.lyrics.every((line) => line.wordTiming === 'estimated')); assert.deepEqual(record.metadata.lyrics.map((line) => line.time), original.find((old) => old.metadata.id === record.metadata.id).metadata.lyrics.map((line) => line.time)); }
       const old = original.find((item) => item.metadata.id === record.metadata.id);
       assert.deepEqual(record.metadata.lyrics.map((line) => line.translation), old.metadata.lyrics.map((line) => line.translation));
       const directory = path.join(profile, '音乐库', '歌曲', record.metadata.id);
       const lrc = (await fs.readdir(directory)).find((name) => name.endsWith('.lrc') && !name.endsWith('.zh.lrc'));
-      assert.match(await fs.readFile(path.join(directory, lrc), 'utf8'), /<\d\d:\d\d\.\d\d\d>/);
+      const lrcText = await fs.readFile(path.join(directory, lrc), 'utf8');
+      assert.match(lrcText, /<\d\d:\d\d\.\d\d\d>/);
+      if (textMode && record.metadata.id !== readyId) assert.ok(lrcText.includes('[x-timing:estimated]'));
     }
     await page.screenshot({ path: path.join(root, 'test-results/automatic-word-alignment.png'), fullPage: true });
     await page.reload(); await page.waitForSelector('.track-row');
@@ -83,7 +99,7 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('.alignment-status')?.textContent.includes('上次识别未确认完成'), { timeout: 20000 });
     assert.equal(await app.evaluate(() => globalThis.audioRequests), 3, 'failed / uncertain paid calls must not be retried on reload');
     assert.deepEqual(errors, []);
-    console.log('PASS automatic check after saved AI configuration, zero-call skip of existing word timing, audio-only model, enhanced LRC, Chinese retention, zero duplicate calls, queue stops on provider error and failed / uncertain jobs stay paused after reload');
+    console.log((textMode ? 'CHAT ESTIMATION (mock DeepSeek, zero audio uploads): ' : 'AUDIO ALIGNMENT: ') + 'PASS automatic check after saved AI configuration, zero-call skip of existing word timing, audio-only model, enhanced LRC, Chinese retention, zero duplicate calls, queue stops on provider error and failed / uncertain jobs stay paused after reload');
   } finally { if (app) await app.close(); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -12,7 +12,8 @@ export function safeFilename(value: string) {
 
 export function serializeLyrics(lines: LyricLine[], translated = false) {
   const hasTime = lines.some((line) => line.time >= 0);
-  return lines.map((line) => {
+  const header = !translated && lines.some((line) => timedWords(line) && line.wordTiming === 'estimated') ? '[x-timing:estimated]\n' : '';
+  return header + lines.map((line) => {
     const text = translated ? line.translation ?? '' : enhancedLyricText(line);
     if (!text) return hasTime ? '' : ' ';
     if (line.time < 0) return text;

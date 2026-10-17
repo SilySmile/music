@@ -6,10 +6,11 @@ import { importFiles } from './importer';
 import { parseLyrics } from './lyrics';
 
 describe('portable music archive', () => {
-  it('retains word timing and pauses in both metadata and standalone LRC', async () => {
+  it.each([false, true])('retains word timing and pauses in metadata and standalone LRC (estimated=%s)', async (estimated) => {
     const demo = await fs.readFile('public/demo/弦栖霁示例.zip');
     const { tracks } = await importFiles([new File([demo], 'demo.zip')], () => {});
     tracks[0].lyrics = parseLyrics('[1000,4000](1000,500,0)Snow (3000,2000,0)falls');
+    if (estimated) tracks[0].lyrics = tracks[0].lyrics.map((line) => ({ ...line, wordTiming: 'estimated' }));
     const bytes = await createMusicArchive([tracks[0]], () => {});
     const restored = await importFiles([new File([bytes], 'word-timing.zip')], () => {});
     expect(restored.tracks[0].lyrics).toEqual(tracks[0].lyrics);

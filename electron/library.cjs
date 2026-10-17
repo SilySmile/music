@@ -25,7 +25,8 @@ async function atomicJSON(file, value) {
 }
 function lyricsText(lines, translated) {
   const timed = lines.some((line) => line.time >= 0);
-  return lines.map((line) => {
+  const header = !translated && lines.some((line) => timedWords(line) && line.wordTiming === 'estimated') ? '[x-timing:estimated]\n' : '';
+  return header + lines.map((line) => {
     const text = translated ? line.translation || '' : enhancedText(line);
     if (!text) return timed ? '' : ' ';
     if (line.time < 0) return text;
