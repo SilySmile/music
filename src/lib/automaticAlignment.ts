@@ -54,7 +54,7 @@ export async function runAutomaticAlignment(options: { tracks: Track[]; config: 
     emit(`逐字歌词检查完成：生成 ${state.generated} 首，跳过 ${state.skipped} 首${state.partial ? `，${state.partial} 首有未匹配句子，保留原歌词且不反复调用` : ''}。`);
   } catch (error) {
     state.failed += signal.aborted ? 0 : 1;
-    emit(signal.aborted ? '自动生成已暂停。已保存的逐字歌词保留，在途请求可能已经计费；未完成项需手动重试。' : (error instanceof Error ? error.message : '逐字歌词生成失败，本轮已停止。'));
+    emit(signal.aborted ? '自动生成已暂停。已保存的逐字歌词保留，在途请求可能已经计费；未完成项需手动重试。' : `${error instanceof Error ? error.message : '逐字歌词生成失败。'} 本轮已停止，可点击下方“重试未完成项”继续。`);
   } finally { state.running = false; options.progress({ ...state }); }
   return state;
 }

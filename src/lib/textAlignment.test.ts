@@ -33,13 +33,60 @@ describe('chat-based singing time estimates', () => {
     expect(result.lyrics[0]).toMatchObject({ time: 1, text: track.lyrics[0].text, translation: 'Hello', wordTiming: 'estimated' });
     expect(track.lyrics[0].words).toBeUndefined();
   });
-  it('rejects changed source, reordered units, overlaps, out-of-line times and false song versions', () => {
+  it('rejects changed source, reordered units, invalid numbers and false song versions', () => {
     const targets = textAlignmentTargets(track);
-    const cases = [answer(), answer(), answer(), answer(), answer(), answer()];
+    const cases = [answer(), answer(), answer(), answer()];
     cases[0].lines[0].source = '被替换'; cases[1].lines[0].words.reverse();
-    cases[2].lines[0].words[1].start = 1.1; cases[3].lines[0].words.at(-1)!.end = 8;
-    cases[4].song = { ...song, album: '另一版本' }; cases[5].lines[0].words[0].start = NaN;
+    cases[2].song = { ...song, album: '另一版本' }; cases[3].lines[0].words[0].start = NaN;
     for (const value of cases) expect(() => readEstimatedTimings(JSON.stringify(value), targets, song)).toThrow();
+  });
+  it('maps vocal lengths and rests into the original line with no overlap, including numeric strings', () => {
+    const targets = textAlignmentTargets(track);
+    const weighted = { song, lines: targets.map((target) => ({ id: target.id, source: target.source, singing: '换气后连唱，末字拖音，未经录音验证', tailPause: '1', words: target.units.map((text, index) => ({ text, duration: index === target.units.length - 1 ? '4' : '1', pauseBefore: index === 1 ? '.8' : 0 })) })) };
+    const result = readEstimatedTimings(JSON.stringify(weighted), targets, song);
+    for (const target of targets) {
+      const words = result.get(target.id)!.words!;
+      expect(words.map((word) => word.text).join('')).toBe(target.source);
+      expect(words[0].time).toBeGreaterThanOrEqual(target.start);
+      expect(words.at(-1)!.endTime).toBeLessThan(target.end);
+      for (const [index, word] of words.entries()) {
+        expect(word.time).toBeGreaterThanOrEqual(words[index - 1]?.endTime ?? target.start);
+        expect(word.endTime).toBeGreaterThan(word.time);
+      }
+      expect(words[1].time).toBeGreaterThan(words[0].endTime!);
+      expect(words.at(-1)!.endTime! - words.at(-1)!.time).toBeGreaterThan((words[0].endTime! - words[0].time) * 3);
+    }
+  });
+  it('locally repairs legacy boundary overflow, overlaps and reversed timestamps while preserving source order', () => {
+    const targets = textAlignmentTargets(track);
+    for (const change of [
+      (value: ReturnType<typeof answer>) => { value.lines[0].words[1].start = 1.1; },
+      (value: ReturnType<typeof answer>) => { value.lines[0].words.at(-1)!.end = 8; },
+      (value: ReturnType<typeof answer>) => { value.lines[0].words[1].start = .5; },
+    ]) {
+      const value = answer(); change(value);
+      const line = readEstimatedTimings(JSON.stringify(value), targets, song).get(0)!;
+      expect(line.timingNote).toContain('整理到原句范围');
+      expect(line.wordTiming).toBe('estimated');
+      for (const [index, word] of line.words!.entries()) {
+        expect(word.text).toBe(targets[0].units[index]);
+        expect(word.time).toBeGreaterThanOrEqual(line.words![index - 1]?.endTime ?? targets[0].start);
+        expect(word.endTime).toBeGreaterThan(word.time);
+        expect(word.endTime).toBeLessThanOrEqual(targets[0].end);
+      }
+    }
+    expect(readEstimatedTimings(JSON.stringify(answer()), targets, song).get(0)!.words![0]).toEqual({ text: '你，', time: 1, endTime: 1.3 });
+  });
+  it('rejects missing/negative vocal lengths, invalid rests and too-short intervals without fabricating uniform words', () => {
+    const targets = textAlignmentTargets(track);
+    const weighted = () => ({ song, lines: targets.map((target) => ({ id: target.id, source: target.source, singing: '估算', words: target.units.map((text) => ({ text, duration: 1, pauseBefore: 0 })) })) });
+    for (const invalid of [-1, 0, NaN]) {
+      const value = weighted(); value.lines[0].words[0].duration = invalid;
+      expect(() => readEstimatedTimings(JSON.stringify(value), targets, song)).toThrow();
+    }
+    const value = weighted(); value.lines[0].words[0].pauseBefore = -1;
+    expect(() => readEstimatedTimings(JSON.stringify(value), targets, song)).toThrow();
+    expect(() => readEstimatedTimings(JSON.stringify(weighted()), targets.map((target) => ({ ...target, end: target.start + .001 })), song)).toThrow();
   });
   it('preserves the estimate marker through standalone enhanced LRC and leaves Chinese plain', () => {
     const estimates = readEstimatedTimings(JSON.stringify(answer()), textAlignmentTargets(track), song);
