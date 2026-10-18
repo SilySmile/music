@@ -22,6 +22,7 @@ function enhancedWords(source: string, start: number, offset: number): { text: s
 
 export function parseLyrics(source: string): LyricLine[] {
   const entries: LyricLine[] = [];
+  const legacyEstimated = source.split(/\r?\n/).some((line) => /^\s*\[x-timing:estimated\]\s*$/i.test(line));
   const offset = Number(source.match(/\[offset:([+-]?\d+)\]/i)?.[1] ?? 0) / 1000;
   for (const rawLine of source.replace(/^\uFEFF/, '').split(/\r?\n/)) {
     // YRC supplies explicit start and duration for each sung word (milliseconds).
@@ -32,7 +33,7 @@ export function parseLyrics(source: string): LyricLine[] {
       if (words.length) {
         words[0].text = words[0].text.trimStart(); words[words.length - 1].text = words.at(-1)!.text.trimEnd();
         const line = { time: Math.max(0, Number(yrc[1]) / 1000 + offset), text: words.map((word) => word.text).join(''), words: words.filter((word) => word.text) };
-        if (line.text) entries.push(timedWords(line) ? line : { time: line.time, text: line.text });
+        if (line.text) entries.push(timedWords(line) ? { ...line, ...(legacyEstimated ? { wordTiming: 'estimated' as const } : {}) } : { time: line.time, text: line.text });
       }
       continue;
     }
@@ -49,6 +50,7 @@ export function parseLyrics(source: string): LyricLine[] {
         ...(Number.isFinite(endTime) && endTime > time ? { endTime } : {}),
         text,
         ...(words ? { words: words.map((word) => { const delta = seconds(timestamp[1], timestamp[2], timestamp[3]) - firstTime; return { ...word, time: Math.max(0, word.time + delta), ...(word.endTime !== undefined ? { endTime: Math.max(0, word.endTime + delta) } : {}) }; }) } : {}),
+        ...(words && (legacyEstimated || /\[x-timing:estimated\]/i.test(rawLine)) ? { wordTiming: 'estimated' as const } : {}),
       });
     }
   }
@@ -62,7 +64,6 @@ export function parseLyrics(source: string): LyricLine[] {
       previous.translation = [previous.translation, entry.text].filter(Boolean).join(' / ');
     } else merged.push({ ...entry });
   }
-  if (/\[x-timing:estimated\]/i.test(source)) for (const line of merged) if (line.words) line.wordTiming = 'estimated';
   return merged;
 }
 

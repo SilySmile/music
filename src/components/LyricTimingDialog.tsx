@@ -85,10 +85,10 @@ function SongTimingEditor(props: Props & { track: Track; trackId: string; onSele
       abort.signal.throwIfAborted(); await ensureCurrent();
       if (!alive.current) return;
       const replaced = new Set(result.lyrics.flatMap((line, index) => (mode !== 'line' || index === lineIndex) && (!timedWords(input.lyrics[index]) || (config.alignmentMode === 'forced' && input.lyrics[index].wordTiming === 'estimated' && line.wordTiming !== 'estimated')) && timedWords(line) ? [index] : []));
-      if (!replaced.size) { setMessage(`当前范围没有可生成的句子，原时间已保留。${alignmentIssueSummary(result.issues)}`); return; }
+      if (!replaced.size) { setMessage(`${config.alignmentMode === 'forced' ? `已检查 ${result.rounds || 1} 轮，仍有 ${result.unmatched} 句待复核` : '当前范围没有可生成的句子'}，原时间已保留。${alignmentIssueSummary(result.issues)}`); return; }
       const generated = next.map((line, index) => replaced.has(index) ? result.lyrics[index] : line);
-      const remaining = input.lyrics.filter((line, index) => (mode !== 'line' || index === lineIndex) && vocalLine(line) && (!timedWords(line) || (config.alignmentMode === 'forced' && line.wordTiming === 'estimated'))).length - replaced.size;
-      setLyrics(generated); setDrafts(mode === 'all' ? Object.fromEntries(Object.entries(drafts).filter(([index]) => !replaced.has(Number(index)))) : {}); setAIDirty(true); setMessage(remaining > 0 ? `AI 已生成 ${replaced.size} 句，${remaining} 句未匹配并保留原时间；可继续调整，保存后生效。${alignmentIssueSummary(result.issues)}` : 'AI 生成完成，可继续调整；点击“保存歌词时间”后生效。');
+      const remaining = config.alignmentMode === 'forced' ? result.unmatched : input.lyrics.filter((line, index) => (mode !== 'line' || index === lineIndex) && vocalLine(line) && !timedWords(line)).length - replaced.size;
+      setLyrics(generated); setDrafts(mode === 'all' ? Object.fromEntries(Object.entries(drafts).filter(([index]) => !replaced.has(Number(index)))) : {}); setAIDirty(true); setMessage(remaining > 0 ? `AI 已生成 ${replaced.size} 句，${remaining} 句未匹配并保留原时间；${config.alignmentMode === 'forced' ? result.interrupted ? '资源或服务暂不可用，剩余句子可稍后继续；' : `已尝试 ${result.rounds || 1} 轮不同上下文，剩余句子待复核；` : ''}可继续调整，保存后生效。${alignmentIssueSummary(result.issues)}` : 'AI 生成完成，可继续调整；点击“保存歌词时间”后生效。');
     } catch (error) { if (alive.current) setMessage(abort.signal.aborted ? '生成已取消，未保存的调整保留。' : error instanceof Error ? error.message : '生成失败，原歌词保留。'); }
     finally { if (controller.current === abort) controller.current = null; if (alive.current) { setRunning(false); props.onBusy(false); } }
   }

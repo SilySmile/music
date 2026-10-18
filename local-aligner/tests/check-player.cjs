@@ -26,13 +26,13 @@ async function main() {
     try {
       if (req.headers.authorization !== `Bearer ${key}`) { res.writeHead(401); res.end('{}'); return; }
       res.setHeader('Content-Type', 'application/json');
-      if (req.url === '/v1/health') { res.end(JSON.stringify({ service: 'xianqiji-forced-aligner', protocol: 1, model: 'fixture-aligner', ready: true, resource_ready: !pressure, reason: pressure ? '模拟显存繁忙' : '', concurrency: 2 })); return; }
+      if (req.url === '/v1/health') { res.end(JSON.stringify({ service: 'xianqiji-forced-aligner', protocol: 1, model: 'fixture-aligner', ready: true, resource_ready: !pressure, reason: pressure ? '模拟显存繁忙' : '', concurrency: 2, alignment_strategies: 5 })); return; }
       assert.equal(req.url, '/v1/alignments');
       assert.ok(Number(req.headers['content-length']) > 0, 'Chromium multipart must supply Content-Length for the bounded server');
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const form = await new Request(base + req.url, { method: 'POST', headers: { 'Content-Type': req.headers['content-type'] }, body: Buffer.concat(chunks) }).formData();
       const input = JSON.parse(form.get('alignment')); assert.ok(form.get('file').size > 0);
-      const call = { trackId: input.trackId, ids: input.lines.map((line) => line.id), ends: input.lines.map((line) => line.end) }; calls.push(call);
+      const call = { trackId: input.trackId, ids: input.lines.map((line) => line.id), ends: input.lines.map((line) => line.end), attempt: input.attempt || 0 }; calls.push(call);
       active++; peak = Math.max(peak, active);
       try {
         await new Promise((resolve) => setTimeout(resolve, delay));
@@ -65,6 +65,7 @@ async function main() {
     async function settings() { await page.getByRole('button', { name: '偏好设置', exact: true }).first().click(); }
     async function saveConfig() { await page.getByRole('button', { name: '保存 AI 配置', exact: true }).click(); await page.waitForFunction(() => document.querySelector('.config-save')?.textContent.includes('配置已保存')); }
     await settings();
+    await page.waitForFunction(() => document.querySelector('input[aria-label="翻译 API Key"]')?.value === 'fixture-translation-key');
     await page.getByLabel('逐字时间生成方式', { exact: true }).selectOption('forced');
     await page.getByLabel('本地强对齐连接配置文件', { exact: true }).setInputFiles({ name: 'fixture-connection.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ format: 'xianqiji-local-aligner', url: base + '/v1', model: 'fixture-aligner', key })) });
     await page.getByText(/连接配置已导入/).waitFor();
@@ -100,17 +101,28 @@ async function main() {
       return ids.slice(0, 2).every((id) => records.find((record) => record.metadata.id === id).metadata.lyrics[1].words?.length === 2);
     }, ids);
     await page.waitForTimeout(1900);
-    assert.equal(calls.length, 3, 'only the two songs needing alignment should upload'); assert.equal(peak, 2);
+    await until(() => calls.length === 7, 'bounded retries for remaining phrases');
+    await until(async () => (await page.locator('.forced-alignment-settings').innerText()).includes('已检查 2 / 2 首'), 'all retry responses validated and saved before restart');
+    assert.equal(calls.length, 7, 'one manual request, two initial automatic songs and four retries for the remaining phrase'); assert.equal(peak, 2);
+    assert.deepEqual(calls.filter((call) => call.attempt).map((call) => [call.attempt, call.ids]), [[1, [0]], [2, [0]], [3, [0]], [4, [0]]]);
     const autoRecords = await page.evaluate(() => window.tingyuDesktop.listLibraryTracks());
+    const autoStatus = await page.locator('.forced-alignment-settings').innerText();
+    assert.equal(autoRecords.find((record) => record.metadata.id === ids[0]).metadata.lyrics[1].wordTiming, undefined, 'accepted phrase must not inherit estimated provenance');
+    assert.equal(autoRecords.find((record) => record.metadata.id === ids[0]).metadata.lyrics[1].words.length, 2, 'accepted phrase must be saved before restart');
+    const lyricFolder = path.join(profile, '音乐库', '歌曲', ids[0]);
+    const lyricFile = (await fs.readdir(lyricFolder)).find((file) => file.endsWith('.lrc') && !file.endsWith('.zh.lrc'));
+    const lyricText = await fs.readFile(path.join(lyricFolder, lyricFile), 'utf8');
+    assert.ok(lyricText.startsWith('[00:01.000][x-timing:estimated]'), 'native library writes estimate provenance per phrase');
+    assert.equal((lyricText.match(/\[x-timing:estimated\]/g) || []).length, 1);
     assert.equal(autoRecords.find((record) => record.metadata.id === ids[0]).metadata.lyrics[0].wordTiming, 'estimated', 'unmatched old estimate must remain intact');
     assert.deepEqual(autoRecords.find((record) => record.metadata.id === ids[2]).metadata.lyrics, genuine, 'genuine timings must be skipped');
     await page.reload(); await page.waitForSelector('.track-row'); await page.waitForTimeout(2200);
-    assert.equal(calls.length, 3, 'partial result checkpoint must stop automatic retry loops across restart');
+    assert.equal(calls.length, 7, 'exhausted distinct strategies must stop automatic retry loops across restart');
     await settings(); partial = false;
     await page.getByRole('button', { name: '重试本地强对齐失败项', exact: true }).click();
-    await until(() => calls.length === 4, 'explicit retry request');
+    await until(() => calls.length === 8, 'explicit retry request');
     await until(async () => (await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === ids[0]).metadata.lyrics[0].wordTiming !== 'estimated', 'retry saved actual times');
-    assert.equal(calls.length, 4); assert.deepEqual(calls[3].ids, [0]);
+    assert.equal(calls.length, 8); assert.deepEqual(calls[7].ids, [0], JSON.stringify({ autoStatus, calls, partial: autoRecords.map((record) => ({ id: record.metadata.id, lyrics: record.metadata.lyrics })) }));
     await page.getByLabel('自动本地强对齐', { exact: true }).uncheck(); await saveConfig();
     await page.getByLabel('强对齐服务密钥', { exact: true }).fill('wrong-fixture-key');
     await page.getByRole('button', { name: '测试强对齐连接', exact: true }).click(); await page.getByText(/HTTP 401/).waitFor();

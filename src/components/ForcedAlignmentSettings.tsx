@@ -31,7 +31,7 @@ export default function ForcedAlignmentSettings({ value, onChange, status, onRet
     <div className="timing-actions"><button className="button outline" onClick={() => input.current?.click()}>导入本地强对齐配置</button><button className="button outline" disabled={checking || !config.key} onClick={() => void check()}>{checking ? '正在连接…' : '测试强对齐连接'}</button></div>
     <label className="remember-key"><input type="checkbox" aria-label="自动本地强对齐" checked={config.automatic} disabled={!window.tingyuDesktop} onChange={(event) => change({ automatic: event.target.checked })} />自动处理本地歌曲（桌面端）</label>
     <label className="audio-model-field">最大并发歌曲数<select aria-label="强对齐最大并发数" value={config.concurrency} onChange={(event) => change({ concurrency: Number(event.target.value) === 1 ? 1 : 2 })}><option value={1}>1 · 更轻量</option><option value={2}>2 · 平衡（推荐）</option></select></label>
-    <p className="field-help">手动模式在歌词设置中生成并试听后保存。自动模式会逐首检查所有待处理句子，补齐缺失时间和旧的聊天 AI 估算结果；已有有效实测逐字时间跳过。每次两句只是内部小批次，不是每首只能处理两句，页面会显示已检查和通过的句数。自动结果直接保存，原文与中文保留；未通过的句子保留原时间，可在歌词设置中查看原因并重试。服务停止或资源紧张时等待，失败项不会连续重试。模型仅由你的一键脚本启动。</p>
+    <p className="field-help">手动模式在歌词设置中生成并试听后保存。自动模式逐首处理缺失时间和旧的聊天 AI 估算结果，已有有效逐字时间跳过。每首先检查全部待处理句子，再只重试未通过的句子，最多尝试五种音频上下文；已通过的字时间、拖音、句内停顿和句后间奏保留，署名信息跳过。页面显示轮次和剩余句数；全部通过就结束，策略耗尽仍不通过则标记待复核，不重复空转或放松标准凑满通过。自动结果直接保存；资源或服务暂不可用时保存已通过的结果，稍后继续。模型仅由你的一键脚本启动。</p>
     {message && <p className="field-help" role="status">{message}</p>}{status && <p className="field-help" role="status">{status}</p>}{config.automatic && onRetry && <button className="button outline" onClick={onRetry}>重试本地强对齐失败项</button>}
   </div>;
 }

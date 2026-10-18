@@ -12,6 +12,8 @@ def validate_manifest(value, model):
     if not isinstance(value, dict) or not isinstance(value.get("trackId"), str) or len(value["trackId"]) > 128:
         raise ValueError("歌曲标识无效")
     lines = value.get("lines")
+    if type(value.get('attempt', 0)) is not int or not 0 <= value.get('attempt', 0) < 5:
+        raise ValueError("对齐轮次无效")
     if not isinstance(lines, list) or not 1 <= len(lines) <= 500:
         raise ValueError("歌词行数须为 1–500")
     seen = set()
@@ -46,7 +48,7 @@ def decode_predictions(units, bins, segment_ms, offset, boundary):
     return words
 
 
-def constrained_timestamps(scores, raw_bins, segment_ms, duration):
+def constrained_timestamps(scores, raw_bins, segment_ms, duration, minimum=0):
     """Viterbi over model logits, with positive word spans and no forced tail.
 
     A constrained time must remain within 0.8s and three logit units of that
@@ -67,7 +69,7 @@ def constrained_timestamps(scores, raw_bins, segment_ms, duration):
         raise ValueError("模型时间类别无效")
     peaks = values[np.arange(len(raw)), raw]
     local = values[:, :count] - peaks[:, None]
-    allowed = (local >= -3) & (np.abs(np.arange(count)[None, :] - raw[:, None]) * segment_ms <= 800)
+    allowed = (local >= -3) & (np.abs(np.arange(count)[None, :] - raw[:, None]) * segment_ms <= 800) & (np.arange(count)[None, :] * segment_ms >= minimum * 1000 - .001)
     local = np.where(allowed, local, -np.inf)
     previous = local[0].copy()
     parents = np.zeros((len(raw), count), dtype=np.int32)
@@ -90,17 +92,21 @@ def constrained_timestamps(scores, raw_bins, segment_ms, duration):
     return result[::-1]
 
 
-def decode_scored_predictions(units, scores, raw_bins, segment_ms, offset, boundary):
+def decode_scored_predictions(units, scores, raw_bins, segment_ms, offset, boundary, minimum=None):
     """Preserve valid argmax outputs; constrain ambiguous model scores on failure."""
     if not units or len(raw_bins) != 2 * len(units):
         raise ValueError("模型时间标记数与原文不符")
+    minimum = offset if minimum is None else minimum
     try:
-        return decode_predictions(units, raw_bins, segment_ms, offset, boundary), False
+        words = decode_predictions(units, raw_bins, segment_ms, offset, boundary)
+        if words[0]['start'] < minimum - .001:
+            raise ValueError("模型时间超出原句开始")
+        return words, False
     except ValueError:
-        bins = constrained_timestamps(scores, raw_bins, segment_ms, boundary - offset)
+        bins = constrained_timestamps(scores, raw_bins, segment_ms, boundary - offset, minimum - offset)
         # A final quantized bin may extend up to one bin beyond the audio cut.
         words = []
-        previous = offset
+        previous = minimum
         for index, text in enumerate(units):
             start = round(offset + bins[index * 2] * segment_ms / 1000, 3)
             end = round(min(boundary, offset + bins[index * 2 + 1] * segment_ms / 1000), 3)

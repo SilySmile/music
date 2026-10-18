@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import type { AudioAIRequest, Track } from '../types';
-import { defaultForcedConfig, forcedTargets, forcedUrl, generateForcedAlignment, needsForcedAlignment } from './forcedAlignment';
+import { defaultForcedConfig, forcedTargets, forcedUrl, generateForcedAlignmentPass as generateForcedAlignment, generateForcedAlignment as generateForcedAlignmentRounds, needsForcedAlignment } from './forcedAlignment';
 import { prepareLyricRegeneration, timingFingerprint } from './lyricTimingEditor';
 import { serializeLyrics } from './exporter';
 import { parseLyrics } from './lyrics';
@@ -93,5 +93,50 @@ describe('local forced alignment', () => {
       await vi.advanceTimersByTimeAsync(10000);
       expect(health).toHaveBeenCalledTimes(1);
     } finally { vi.useRealTimers(); }
+  });
+  it('excludes credits and full title/artist headers without excluding a sung title', () => {
+    const source = { ...track, title: '你好', artist: '测试歌手', lyrics: [{ time: 0, text: '你好 - 测试歌手' }, { time: 1, text: '录音：某某' }, { time: 2, text: '混音师：某某' }, { time: 4, text: '你好' }] };
+    expect(forcedTargets(source).map((line) => line.id)).toEqual([3]);
+    expect(needsForcedAlignment({ ...source, lyrics: source.lyrics.slice(0, 3) })).toBe(false);
+  });
+  it('retries only remaining phrases with new contexts, prepares audio once and preserves sung ends', async () => {
+    const prepare = vi.fn(prepared);
+    const health = vi.fn(async () => ({ service: 'xianqiji-forced-aligner' as const, protocol: 1 as const, model: config.model, ready: true, resource_ready: true, concurrency: 2, alignment_strategies: 5 }));
+    const calls: AudioAIRequest[] = [];
+    const result = await generateForcedAlignmentRounds(track, config, new AbortController().signal, { prepare, health, request: async (input) => {
+      calls.push(input);
+      const manifest = input.alignment!;
+      return { protocol: 1, model: config.model, trackId: track.id, lines: manifest.lines.map((line) => !manifest.attempt && line.id === 1 ? { id: line.id, text: line.text, error: '分数不足' } : { id: line.id, text: line.text, words: line.units.map((text, i) => ({ text, start: line.start + i, end: line.start + i + .5 })) }) };
+    } });
+    expect(calls.map((input) => [input.alignment!.attempt, input.alignment!.lines.map((line) => line.id)])).toEqual([[0, [0, 1]], [1, [1]]]);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ matched: 2, unmatched: 0, rounds: 2 });
+    expect(result.lyrics[0].endTime).toBe(2.5); // 4.5 seconds of interlude remain before line 2.
+    expect(result.lyrics[0].translation).toBe('Hello');
+    expect(parseLyrics(serializeLyrics(result.lyrics)).map(({ time, endTime, words }) => ({ time, endTime, words }))).toEqual(result.lyrics.map(({ time, endTime, words }) => ({ time, endTime, words })));
+  });
+  it('stops after distinct supported strategies are exhausted without claiming full success', async () => {
+    const request = vi.fn(async (input: AudioAIRequest) => ({ protocol: 1, model: config.model, trackId: track.id, lines: input.alignment!.lines.map((line) => ({ id: line.id, text: line.text, error: '分数不足' })) }));
+    const health = async () => ({ service: 'xianqiji-forced-aligner' as const, protocol: 1 as const, model: config.model, ready: true, resource_ready: true, concurrency: 2, alignment_strategies: 5 });
+    const result = await generateForcedAlignmentRounds(track, config, new AbortController().signal, { request, prepare: prepared, health });
+    expect(request).toHaveBeenCalledTimes(5);
+    expect(result).toMatchObject({ matched: 0, unmatched: 2, rounds: 5, lyrics: track.lyrics });
+  });
+  it('retains a successful phrase across four unsuccessful retries of an old estimate', async () => {
+    const source = { ...track, lyrics: [{ ...track.lyrics[0], wordTiming: 'estimated' as const, words: [{ text: '你好', time: 1, endTime: 6 }] }, track.lyrics[1]] };
+    const health = async () => ({ service: 'xianqiji-forced-aligner' as const, protocol: 1 as const, model: config.model, ready: true, resource_ready: true, concurrency: 2, alignment_strategies: 5 });
+    const result = await generateForcedAlignmentRounds(source, config, new AbortController().signal, { prepare: prepared, health, request: async (input) => ({ protocol: 1, model: config.model, trackId: track.id, lines: input.alignment!.lines.map((line) => line.id === 0 ? { id: line.id, text: line.text, error: 'fixture unmatched' } : { id: line.id, text: line.text, words: [{ text: '再', start: 7, end: 8 }, { text: '见', start: 9, end: 10 }] }) }) });
+    expect(result).toMatchObject({ matched: 1, unmatched: 1, rounds: 5 });
+    expect(result.lyrics[1].words).toHaveLength(2);
+    expect(result.lyrics[1].wordTiming).toBeUndefined();
+  });
+  it('retains partial results when resources pause, and cancels before another round', async () => {
+    const request = vi.fn(async () => response());
+    const controller = new AbortController();
+    const health = async () => ({ service: 'xianqiji-forced-aligner' as const, protocol: 1 as const, model: config.model, ready: true, resource_ready: false, concurrency: 2 });
+    const result = await generateForcedAlignmentRounds(track, config, controller.signal, { request, prepare: prepared, health });
+    expect(result).toMatchObject({ matched: 1, unmatched: 1, interrupted: true });
+    expect(request).toHaveBeenCalledTimes(1);
+    await expect(generateForcedAlignmentRounds(track, config, controller.signal, { request: async () => { controller.abort(); return response(); }, prepare: prepared, health })).rejects.toThrow();
   });
 });

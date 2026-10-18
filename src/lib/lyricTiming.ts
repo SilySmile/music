@@ -45,7 +45,7 @@ export function enhancedLyricText(line: LyricLine): string {
   const words = timedWords(line);
   // Per-line extension preserves sung end without inventing word timestamps.
   const end = lineEndMetadata(line).endTime;
-  const marker = end === undefined ? '' : `[x-end:${lyricTimestamp(end)}]`;
+  const marker = (words && line.wordTiming === 'estimated' ? '[x-timing:estimated]' : '') + (end === undefined ? '' : `[x-end:${lyricTimestamp(end)}]`);
   if (!words) return marker + line.text;
   return marker + words.map((word, index) => `<${lyricTimestamp(word.time)}>${word.text}${word.endTime !== undefined && word.endTime !== words[index + 1]?.time ? `<${lyricTimestamp(word.endTime)}>` : ''}`).join('');
 }

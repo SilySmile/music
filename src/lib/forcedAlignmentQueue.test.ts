@@ -49,4 +49,11 @@ describe('bounded local forced alignment queue', () => {
     expect(forcedTaskKey(track, 'library-b', config)).not.toBe(first);
     expect(forcedTaskKey(track, 'library-a', { ...config, model: 'new' })).not.toBe(first);
   });
+  it('saves partial work but leaves pending phrases eligible after service/resource interruption', async () => {
+    const options = base(); const track = options.tracks[0];
+    await runForcedQueue({ ...options, tracks: [track], generate: async () => ({ ...aligned(track), unmatched: 1, interrupted: true }) });
+    expect(options.save).toHaveBeenCalledTimes(1);
+    expect(options.attempted.has(forcedTaskKey(track, options.scope, config))).toBe(false);
+    expect(options.progress).toHaveBeenLastCalledWith(expect.objectContaining({ running: false, message: expect.stringContaining('剩余句子稍后继续') }));
+  });
 });

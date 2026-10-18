@@ -9,6 +9,15 @@ import TimedLyricText from '../components/TimedLyricText';
 const native = createRequire(import.meta.url)('../../electron/lyric-timing.cjs');
 
 describe('real word timing', () => {
+  it('keeps estimates local to each phrase while reading legacy whole-file estimate headers', () => {
+    const lines = parseLyrics('[00:01]<00:01>你<00:02>好<00:03>\n[00:05]<00:05>再<00:06>见<00:07>');
+    lines[0].wordTiming = 'estimated';
+    const serialized = serializeLyrics(lines);
+    expect(serialized.startsWith('[00:01.000][x-timing:estimated]')).toBe(true);
+    expect(parseLyrics(serialized).map((line) => line.wordTiming)).toEqual(['estimated', undefined]);
+    expect(native.enhancedText(lines[0])).toBe(enhancedLyricText(lines[0]));
+    expect(parseLyrics('[x-timing:estimated]\n' + serializeLyrics(lines.map((line) => ({ ...line, wordTiming: undefined })))).map((line) => line.wordTiming)).toEqual(['estimated', 'estimated']);
+  });
   it('preserves a plain phrase end independently of the next start without fabricating word timing', () => {
     const line = { time: 1.234, endTime: 4.567, text: '唱完了' };
     expect(parseLyrics(serializeLyrics([line]))).toEqual([line]);

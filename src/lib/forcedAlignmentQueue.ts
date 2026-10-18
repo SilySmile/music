@@ -8,7 +8,7 @@ export const emptyForcedQueue: ForcedQueueState = { running: false, message: '',
 export function forcedTaskKey(track: Track, scope: string, config: ForcedAlignConfig) {
   // Retry missing phrases once after the scored decoder upgrade. Genuine word
   // timings are still excluded by forcedTargets before audio is materialized.
-  const source = JSON.stringify(['scored-decoder-v2', scope, config.url, config.model, track.id, timingFingerprint(track.lyrics)]);
+  const source = JSON.stringify(['context-retry-v3', scope, config.url, config.model, track.id, timingFingerprint(track.lyrics)]);
   return Array.from(sha256(new TextEncoder().encode(source)), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 export async function runForcedQueue(options: {
@@ -26,7 +26,7 @@ export async function runForcedQueue(options: {
   const status = await health(config, signal);
   if (!status.ready || !status.resource_ready) { options.progress({ ...state, message: status.reason || '强对齐服务准备中，稍后自动检查。' }); return; }
   state.running = true; state.message = `正在本地强对齐 0 / ${state.total}…`; options.progress({ ...state });
-  let cursor = 0, limited = false;
+  let cursor = 0, limited = false, lastIssue = '';
   async function worker() {
     while (!signal.aborted && !limited && cursor < candidates.length) {
       const track = candidates[cursor++]; const key = forcedTaskKey(track, options.scope, config);
@@ -45,16 +45,22 @@ export async function runForcedQueue(options: {
         state.matchedLines += result.matched; state.unmatchedLines += result.unmatched;
         signal.throwIfAborted();
         // Partial results must not continuously requeue unmatched phrases.
-        attempted.add(forcedTaskKey({ ...track, lyrics: result.lyrics }, options.scope, config));
+        const resultKey = forcedTaskKey({ ...track, lyrics: result.lyrics }, options.scope, config);
+        if (result.interrupted) {
+          attempted.delete(key); attempted.delete(resultKey); limited = true;
+          state.message = `资源或服务暂不可用，已保存 ${state.matchedLines} 句，剩余句子稍后继续。`;
+        } else attempted.add(resultKey);
         if (result.unmatched || !result.matched) state.failed++;
+        if (result.issues?.length) lastIssue = `第 ${result.issues[0].line} 句：${result.issues[0].reason}`;
       } catch (error) {
         if (signal.aborted) { attempted.delete(key); options.remember(); throw error; }
         const message = error instanceof Error ? error.message : '强对齐失败';
+        lastIssue = message;
         if (/503|429|fetch|连接|ECONN|Failed to fetch/i.test(message)) { attempted.delete(key); limited = true; state.message = '服务停止、队列繁忙或资源紧张，稍后自动检查。'; }
         else { state.failed++; state.message = message; }
       } finally {
         state.completed++; options.remember();
-        if (!limited) state.message = `已检查 ${state.completed} / ${state.total} 首；本轮生成 ${state.matchedLines} 句，${state.unmatchedLines} 句未通过，${state.failed} 首需检查。`;
+        if (!limited) state.message = `已检查 ${state.completed} / ${state.total} 首；本轮生成 ${state.matchedLines} 句，${state.unmatchedLines} 句未通过，${state.failed} 首需检查。${lastIssue ? ` 最近提示：${lastIssue.slice(0, 240)}` : ''}`;
         options.progress({ ...state });
       }
     }

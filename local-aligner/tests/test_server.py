@@ -117,6 +117,26 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(monitor(), '显存不足')
         self.assertEqual(len(samples), 2)
 
+    def test_retry_changes_audio_context_without_changing_phrase_bounds(self):
+        crops = []
+        original = self.backend.align
+        def observe(jobs):
+            crops.extend((job['offset'], job['line']['start'], job['end'], len(job['audio'])) for job in jobs)
+            return original(jobs)
+        self.backend.align = observe
+        for attempt in range(5):
+            self.assertEqual(self.post({**self.manifest, 'attempt': attempt}).status_code, 200)
+        self.assertEqual([round(crop[0], 2) for crop in crops], [1, .88, .70, .42, 0])
+        for begin, start, end, samples in crops:
+            self.assertEqual((start, end), (1, 7))
+            self.assertAlmostEqual(samples / 16000, end - begin, places=4)
+        self.assertEqual(self.client.get('/v1/health', headers={'Authorization': 'Bearer ' + self.config['api_key']}).json()['alignment_strategies'], 5)
+
+    def test_invalid_retry_attempts_are_rejected_before_inference(self):
+        for attempt in (-1, 5, True, '1'):
+            self.assertEqual(self.post({**self.manifest, 'attempt': attempt}).status_code, 400)
+        self.assertEqual(self.backend.batches, [])
+
 
 if __name__ == "__main__":
     unittest.main()

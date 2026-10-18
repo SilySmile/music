@@ -56,5 +56,23 @@ class ConstrainedAlignmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '标记数'):
             decode_scored_predictions(['你', '好'], self.scores([0, 0]), [0, 0], 80, 1, 7)
 
+    def test_long_hold_in_phrase_rest_and_post_phrase_interlude_are_independent(self):
+        bins = [0, 100, 175, 200]
+        words, changed = decode_scored_predictions(['你', '好'], self.scores(bins, 300), bins, 80, 10, 30)
+        self.assertFalse(changed)
+        self.assertEqual(words[0]['end'] - words[0]['start'], 8)
+        self.assertEqual(words[1]['start'] - words[0]['end'], 6)
+        self.assertEqual(30 - words[-1]['end'], 4)
+
+    def test_context_offset_does_not_move_words_outside_original_phrase(self):
+        bins = [5, 50, 75, 90]
+        words, changed = decode_scored_predictions(['你', '好'], self.scores(bins, 120), bins, 80, 9.6, 18, 10)
+        self.assertFalse(changed)
+        self.assertEqual(words[0]['start'], 10)
+        self.assertEqual(words[1]['start'] - words[0]['end'], 2)
+        bad = self.scores([0, 50, 75, 90], 120)
+        with self.assertRaises(ValueError):
+            decode_scored_predictions(['你', '好'], bad, [0, 50, 75, 90], 80, 9.6, 18, 10)
+
 
 if __name__ == '__main__': unittest.main()

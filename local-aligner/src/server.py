@@ -58,7 +58,7 @@ class TransformersBackend:
             line = job["line"]
             try:
                 bins = scores.argmax(axis=-1).tolist()
-                words, calibrated = decode_scored_predictions(line["units"], scores, bins, self.segment_ms, line["start"], job["end"])
+                words, calibrated = decode_scored_predictions(line["units"], scores, bins, self.segment_ms, job.get("offset", line["start"]), job["end"], line["start"])
                 results.append({"id": line["id"], "text": line["text"], "words": words, "calibrated": calibrated})
             except ValueError as error:
                 results.append({"id": line["id"], "text": line["text"], "error": str(error)})
@@ -190,7 +190,7 @@ def create_app(config, backend, monitor=None, idle_callback=None):
     @app.get("/v1/health")
     async def health():
         reason = state["fatal"] or await asyncio.to_thread(monitor)
-        return {"service": "xianqiji-forced-aligner", "protocol": 1, "model": config["model_name"], "ready": not bool(state["fatal"]), "resource_ready": not bool(reason), "reason": reason, "concurrency": max(1, min(2, config.get("max_concurrency", 2))), "active": state["active"], "progress": list(progress.values())}
+        return {"service": "xianqiji-forced-aligner", "protocol": 1, "model": config["model_name"], "ready": not bool(state["fatal"]), "resource_ready": not bool(reason), "reason": reason, "concurrency": max(1, min(2, config.get("max_concurrency", 2))), "active": state["active"], "progress": list(progress.values()), "alignment_strategies": 5}
 
     @app.get("/v1/models")
     async def models():
@@ -250,7 +250,18 @@ def create_app(config, backend, monitor=None, idle_callback=None):
                                 results.append({"id": line["id"], "text": line["text"], "error": "本句区间超过 60 秒或超出音频，请设置本句唱完时间后重试"})
                                 continue
                             future = asyncio.get_running_loop().create_future()
-                            await queue.put({"line": line, "end": end, "audio": audio[round(line["start"] * 16000):round(end * 16000)], "future": future})
+                            # A new prefix changes the acoustic context and the
+                            # timestamp grid; accepted words remain inside the
+                            # unchanged source phrase. Never pad a word to fill
+                            # an instrumental break or relax score thresholds.
+                            contexts = (0, .12, .30, .58, 1.10)
+                            attempt = manifest.get("attempt", 0)
+                            context = contexts[attempt]
+                            begin = max(0, line["start"] - context, end - config.get("max_segment_seconds", 60))
+                            if any(abs(begin - max(0, line["start"] - prior, end - config.get("max_segment_seconds", 60))) < .00001 for prior in contexts[:attempt]):
+                                results.append({"id": line["id"], "text": line["text"], "error": "已尝试相同音频范围，无法增加新上下文；请手动复核原句时间"})
+                                continue
+                            await queue.put({"line": line, "offset": begin, "end": end, "audio": audio[round(begin * 16000):round(end * 16000)], "future": future})
                             futures.append(future)
                         if futures:
                             group = asyncio.gather(*futures)
