@@ -52,14 +52,14 @@ export async function generateForcedAlignment(track: Track, config: ForcedAlignC
   options.stage?.('正在向强对齐服务提交音频与原歌词…');
   const audio = await (options.prepare || prepareAlignmentAudio)(track, signal);
   signal.throwIfAborted();
-  options.stage?.(`正在检查整首待处理的 ${targets.length} 句…`);
+  options.stage?.(`本地强对齐：正在检查整首待处理的 ${targets.length} 句…`);
   let finished = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   async function poll() {
     try {
       const health = await (options.health || checkForcedAlignment)(config, signal);
       const current = health.progress?.find((item) => item.trackId === track.id);
-      if (!finished && !signal.aborted && current && Number.isInteger(current.processed) && Number.isInteger(current.total) && Number.isInteger(current.matched)) options.stage?.(`已检查 ${current.processed} / ${current.total} 句，通过 ${current.matched} 句；其余继续处理…`);
+      if (!finished && !signal.aborted && current && Number.isInteger(current.processed) && Number.isInteger(current.total) && Number.isInteger(current.matched)) options.stage?.(`本地强对齐：已检查 ${current.processed} / ${current.total} 句，通过 ${current.matched} 句；其余继续处理…`);
     } catch { /* Progress is optional; the alignment request reports failures. */ }
     if (!finished && !signal.aborted) timer = setTimeout(() => void poll(), 2000);
   }
