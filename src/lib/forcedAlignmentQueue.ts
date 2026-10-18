@@ -3,10 +3,12 @@ import type { ForcedAlignConfig, Track } from '../types';
 import { checkForcedAlignment, forcedTargets, generateForcedAlignment, needsForcedAlignment } from './forcedAlignment';
 import { timingFingerprint } from './lyricTimingEditor';
 
-export type ForcedQueueState = { running: boolean; message: string; completed: number; total: number; failed: number };
-export const emptyForcedQueue: ForcedQueueState = { running: false, message: '', completed: 0, total: 0, failed: 0 };
+export type ForcedQueueState = { running: boolean; message: string; completed: number; total: number; failed: number; matchedLines: number; unmatchedLines: number };
+export const emptyForcedQueue: ForcedQueueState = { running: false, message: '', completed: 0, total: 0, failed: 0, matchedLines: 0, unmatchedLines: 0 };
 export function forcedTaskKey(track: Track, scope: string, config: ForcedAlignConfig) {
-  const source = JSON.stringify([scope, config.url, config.model, track.id, timingFingerprint(track.lyrics)]);
+  // Retry missing phrases once after the scored decoder upgrade. Genuine word
+  // timings are still excluded by forcedTargets before audio is materialized.
+  const source = JSON.stringify(['scored-decoder-v2', scope, config.url, config.model, track.id, timingFingerprint(track.lyrics)]);
   return Array.from(sha256(new TextEncoder().encode(source)), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 export async function runForcedQueue(options: {
@@ -20,7 +22,7 @@ export async function runForcedQueue(options: {
   const generate = options.generate || generateForcedAlignment;
   const candidates = options.tracks.filter((track) => needsForcedAlignment(track) && forcedTargets(track).length && !attempted.has(forcedTaskKey(track, options.scope, config)));
   const state = { ...emptyForcedQueue, total: candidates.length };
-  if (!candidates.length) { options.progress({ ...state, message: '缺失或旧 AI 估算的逐字时间已检查；失败项可手动重试。' }); return; }
+  if (!candidates.length) { options.progress({ ...state, message: '本轮待处理歌曲已检查完；已有逐字时间会跳过，未通过的句子可点击重试。' }); return; }
   const status = await health(config, signal);
   if (!status.ready || !status.resource_ready) { options.progress({ ...state, message: status.reason || '强对齐服务准备中，稍后自动检查。' }); return; }
   state.running = true; state.message = `正在本地强对齐 0 / ${state.total}…`; options.progress({ ...state });
@@ -34,10 +36,13 @@ export async function runForcedQueue(options: {
       if (!resources.ready || !resources.resource_ready) { limited = true; state.message = resources.reason || '资源紧张，稍后继续'; break; }
       attempted.add(key); options.remember();
       try {
-        const result = await generate(track, config, signal);
+        const result = await generate(track, config, signal, { stage: (message) => {
+          if (!signal.aborted) { state.message = `歌曲 ${state.completed} / ${state.total} 已完成 · ${track.title}：${message}`; options.progress({ ...state }); }
+        } });
         signal.throwIfAborted();
         if (await options.currentScope() !== options.scope) throw new Error('音乐库已改变，未保存本轮结果。');
         if (result.matched) await options.save(track, result.lyrics, signal);
+        state.matchedLines += result.matched; state.unmatchedLines += result.unmatched;
         signal.throwIfAborted();
         // Partial results must not continuously requeue unmatched phrases.
         attempted.add(forcedTaskKey({ ...track, lyrics: result.lyrics }, options.scope, config));
@@ -49,7 +54,7 @@ export async function runForcedQueue(options: {
         else { state.failed++; state.message = message; }
       } finally {
         state.completed++; options.remember();
-        if (!limited) state.message = `本地强对齐 ${state.completed} / ${state.total}，需检查 ${state.failed} 首。`;
+        if (!limited) state.message = `已检查 ${state.completed} / ${state.total} 首；本轮生成 ${state.matchedLines} 句，${state.unmatchedLines} 句未通过，${state.failed} 首需检查。`;
         options.progress({ ...state });
       }
     }

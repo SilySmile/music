@@ -35,6 +35,7 @@ describe('local forced alignment', () => {
     });
     const result = await generateForcedAlignment(track, config, new AbortController().signal, { request, prepare: prepared });
     expect(result).toMatchObject({ matched: 1, unmatched: 1 });
+    expect(result.issues).toEqual([{ line: 2, reason: '未匹配' }]);
     expect(result.lyrics[0]).toMatchObject({ endTime: 4, translation: 'Hello', words: [{ text: '你', time: 1, endTime: 2 }, { text: '好', time: 3, endTime: 4 }] });
     expect(result.lyrics[1]).toBe(track.lyrics[1]);
     expect(result.lyrics[0].wordTiming).toBeUndefined();
@@ -78,5 +79,19 @@ describe('local forced alignment', () => {
     expect(await memory.check(config)).toMatchObject({ ready: true, resource_ready: false, reason: expect.stringContaining('内存不足') });
     const cpu = native({ fetch, resources: () => ({ availableMemoryMB: 10000, cpuPercent: 90 }) });
     expect(await cpu.check(config)).toMatchObject({ ready: true, resource_ready: false, reason: expect.stringContaining('CPU') });
+  });
+  it('reports live full-song progress and stops polling after completion', async () => {
+    vi.useFakeTimers();
+    try {
+      let finish!: (value: ReturnType<typeof response>) => void;
+      const stage = vi.fn();
+      const health = vi.fn(async () => ({ service: 'xianqiji-forced-aligner' as const, protocol: 1 as const, model: config.model, ready: true, resource_ready: true, concurrency: 2, progress: [{ trackId: track.id, total: 2, processed: 1, matched: 1 }] }));
+      const pending = generateForcedAlignment(track, config, new AbortController().signal, { prepare: prepared, stage, health, request: () => new Promise((resolve) => { finish = resolve; }) });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(stage).toHaveBeenCalledWith(expect.stringContaining('1 / 2 句，通过 1 句'));
+      finish(response()); await pending;
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(health).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
   });
 });

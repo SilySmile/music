@@ -11,7 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
 from fastapi.testclient import TestClient
-from server import create_app
+from server import ResourceMonitor, create_app
 
 
 class FakeBackend:
@@ -79,6 +79,43 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(all(response.status_code == 200 for response in responses))
         self.assertTrue(all(1 <= size <= 2 for size in self.backend.batches))
         self.assertEqual(sum(self.backend.batches), 2)
+
+    def test_live_progress_reports_all_phrases_and_cleans_up(self):
+        entered, release = threading.Event(), threading.Event()
+        original = self.backend.align
+        def blocking(jobs):
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError('test timed out')
+            return original(jobs)
+        self.backend.align = blocking
+        manifest = {**self.manifest, 'lines': [{**self.manifest['lines'][0], 'id': i} for i in range(5)]}
+        headers = {'Authorization': 'Bearer ' + self.config['api_key']}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.post, manifest)
+            try:
+                self.assertTrue(entered.wait(5))
+                value = self.client.get('/v1/health', headers=headers).json()['progress']
+                self.assertEqual(value, [{'trackId': 'fixture-id', 'total': 5, 'processed': 0, 'matched': 0}])
+            finally:
+                release.set()
+            result = future.result(timeout=5)
+        self.assertEqual(len(result.json()['lines']), 5)
+        self.assertEqual(self.client.get('/v1/health', headers=headers).json()['progress'], [])
+
+    def test_resource_samples_are_shared_but_refresh_pressure(self):
+        now = [0]
+        samples = []
+        def sample():
+            samples.append(now[0])
+            return '' if len(samples) == 1 else '显存不足'
+        monitor = ResourceMonitor({}, sample=sample, clock=lambda: now[0])
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            self.assertEqual(list(pool.map(lambda _: monitor(), range(16))), [''] * 16)
+        self.assertEqual(len(samples), 1)
+        now[0] = 1
+        self.assertEqual(monitor(), '显存不足')
+        self.assertEqual(len(samples), 2)
 
 
 if __name__ == "__main__":

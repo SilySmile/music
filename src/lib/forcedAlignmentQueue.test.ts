@@ -12,6 +12,7 @@ describe('bounded local forced alignment queue', () => {
     const options = base(); let active = 0, peak = 0;
     await runForcedQueue({ ...options, generate: async (track) => { active++; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 10)); active--; return aligned(track); } });
     expect(peak).toBe(2); expect(options.save).toHaveBeenCalledTimes(3);
+    expect(options.progress).toHaveBeenLastCalledWith(expect.objectContaining({ running: false, completed: 3, matchedLines: 3, unmatchedLines: 0 }));
     expect(options.attempted.has(forcedTaskKey(song('a'), options.scope, config))).toBe(true);
     const generate = vi.fn(); await runForcedQueue({ ...options, generate }); expect(generate).not.toHaveBeenCalled();
   });
@@ -27,6 +28,7 @@ describe('bounded local forced alignment queue', () => {
     const options = base(); const track = options.tracks[0];
     const partial = { ...aligned(track), unmatched: 1 };
     await runForcedQueue({ ...options, tracks: [track], generate: async () => partial });
+    expect(options.progress).toHaveBeenLastCalledWith(expect.objectContaining({ matchedLines: 1, unmatchedLines: 1, failed: 1, message: expect.stringContaining('生成 1 句，1 句未通过') }));
     const generate = vi.fn(); await runForcedQueue({ ...options, tracks: [{ ...track, lyrics: partial.lyrics }], generate });
     expect(generate).not.toHaveBeenCalled();
     await runForcedQueue({ ...options, tracks: [song('invalid')], generate: async () => { throw new Error('原文不符'); } });

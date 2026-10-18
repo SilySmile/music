@@ -4,7 +4,7 @@ import { lineEndMetadata, timedWords } from './lyricTiming';
 import { normalizeAIUrl } from './network';
 
 export type SpeechWord = { word: string; start: number; end: number };
-export type AlignmentResult = { lyrics: LyricLine[]; matched: number; unmatched: number; existing: number };
+export type AlignmentResult = { lyrics: LyricLine[]; matched: number; unmatched: number; existing: number; issues?: { line: number; reason: string }[] };
 export const normalizeSpeechText = (text: string) => text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 export const vocalLine = (line: LyricLine) => !!normalizeSpeechText(line.text) && !/^\s*(?:作[词曲]|编曲|词|曲|制作人|演唱|歌手|专辑|歌名|lyrics?|music|arrang(?:er|ement)|vocal|producer)\s*[:：]/i.test(line.text);
 export const needsWordAlignment = (track: Pick<Track, 'lyrics'>) => track.lyrics.some((line) => vocalLine(line) && !timedWords(line));

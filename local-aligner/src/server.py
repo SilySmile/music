@@ -10,9 +10,11 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
+import uuid
 
-from core import decode_predictions, pressure_reason, validate_manifest
+from core import decode_scored_predictions, pressure_reason, validate_manifest
 
 
 class TransformersBackend:
@@ -49,14 +51,15 @@ class TransformersBackend:
         with torch.inference_mode():
             inputs = self.aligner.processor(text=texts, audio=[job["audio"] for job in jobs], return_tensors="pt", padding=True)
             inputs = inputs.to(self.aligner.model.device).to(self.aligner.model.dtype)
-            output_ids = self.aligner.model.thinker(**inputs).logits.argmax(dim=-1)
-            predictions = [output[input_id == self.aligner.timestamp_token_id].cpu().tolist() for input_id, output in zip(inputs["input_ids"], output_ids)]
+            logits = self.aligner.model.thinker(**inputs).logits
+            predictions = [output[input_id == self.aligner.timestamp_token_id].float().cpu().numpy() for input_id, output in zip(inputs["input_ids"], logits)]
         results = []
-        for job, bins in zip(jobs, predictions):
+        for job, scores in zip(jobs, predictions):
             line = job["line"]
             try:
-                words = decode_predictions(line["units"], bins, self.segment_ms, line["start"], job["end"])
-                results.append({"id": line["id"], "text": line["text"], "words": words})
+                bins = scores.argmax(axis=-1).tolist()
+                words, calibrated = decode_scored_predictions(line["units"], scores, bins, self.segment_ms, line["start"], job["end"])
+                results.append({"id": line["id"], "text": line["text"], "words": words, "calibrated": calibrated})
             except ValueError as error:
                 results.append({"id": line["id"], "text": line["text"], "error": str(error)})
         if len(results) != len(jobs):
@@ -67,11 +70,28 @@ class TransformersBackend:
 def resource_status(config):
     import psutil
     try:
-        raw = subprocess.check_output(["nvidia-smi", "--query-gpu=memory.free,temperature.gpu", "--format=csv,noheader,nounits"], timeout=3, text=True).splitlines()[0]
+        raw = subprocess.check_output(["nvidia-smi", "--query-gpu=memory.free,temperature.gpu", "--format=csv,noheader,nounits"], timeout=3, text=True, **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {})).splitlines()[0]
         free, temperature = map(float, raw.split(","))
         return pressure_reason(config, psutil.virtual_memory().available / 1048576, psutil.cpu_percent(interval=.1), free, temperature)
     except (OSError, ValueError, subprocess.SubprocessError):
         return "无法读取显卡资源，暂停接新任务"
+
+
+class ResourceMonitor:
+    """Share one recent host/GPU sample across batches and health requests."""
+    def __init__(self, config, sample=None, clock=time.monotonic):
+        self.sample = sample or (lambda: resource_status(config))
+        self.clock = clock
+        self.next_sample = float('-inf')
+        self.reason = ''
+        self.lock = threading.Lock()
+
+    def __call__(self):
+        with self.lock:
+            if self.clock() >= self.next_sample:
+                self.reason = self.sample()
+                self.next_sample = self.clock() + 1
+            return self.reason
 
 
 def read_audio(file, config):
@@ -92,18 +112,20 @@ def create_app(config, backend, monitor=None, idle_callback=None):
     from fastapi.responses import JSONResponse
     # FastAPI resolves annotations from module globals.
     globals().update(Request=Request, UploadFile=UploadFile)
-    monitor = monitor or (lambda: resource_status(config))
+    monitor = monitor or ResourceMonitor(config)
     queue = asyncio.Queue(maxsize=16)
     slots = asyncio.Semaphore(max(1, min(2, config.get("max_concurrency", 2))))
     decoder = asyncio.Semaphore(1)
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bounded-aligner")
     state = {"active": 0, "last_used": time.monotonic(), "fatal": "", "pressure": "", "batch_size": max(1, min(2, config.get("max_batch_size", 2)))}
+    progress = {}
 
     async def worker():
         while True:
             first = await queue.get()
             jobs = [first]
-            await asyncio.sleep(.025)
+            if queue.empty():
+                await asyncio.sleep(.005)
             while len(jobs) < state["batch_size"] and not queue.empty():
                 jobs.append(queue.get_nowait())
             live = [job for job in jobs if not job["future"].cancelled()]
@@ -168,7 +190,7 @@ def create_app(config, backend, monitor=None, idle_callback=None):
     @app.get("/v1/health")
     async def health():
         reason = state["fatal"] or await asyncio.to_thread(monitor)
-        return {"service": "xianqiji-forced-aligner", "protocol": 1, "model": config["model_name"], "ready": not bool(state["fatal"]), "resource_ready": not bool(reason), "reason": reason, "concurrency": max(1, min(2, config.get("max_concurrency", 2))), "active": state["active"]}
+        return {"service": "xianqiji-forced-aligner", "protocol": 1, "model": config["model_name"], "ready": not bool(state["fatal"]), "resource_ready": not bool(reason), "reason": reason, "concurrency": max(1, min(2, config.get("max_concurrency", 2))), "active": state["active"], "progress": list(progress.values())}
 
     @app.get("/v1/models")
     async def models():
@@ -196,6 +218,9 @@ def create_app(config, backend, monitor=None, idle_callback=None):
             raise HTTPException(503, reason)
         futures = []
         async with slots:
+            request_id = uuid.uuid4().hex
+            current = {"trackId": manifest["trackId"], "total": len(lines), "processed": 0, "matched": 0}
+            progress[request_id] = current
             state["active"] += 1
             state["last_used"] = time.monotonic()
             try:
@@ -235,6 +260,8 @@ def create_app(config, backend, monitor=None, idle_callback=None):
                                     group.cancel()
                                     raise asyncio.CancelledError()
                             results.extend(await group)
+                        current["processed"] = len(results)
+                        current["matched"] = sum("words" in result and not result.get("error") for result in results)
                     return {"protocol": 1, "model": model, "trackId": manifest["trackId"], "lines": sorted(results, key=lambda line: line["id"])}
             except (ValueError, subprocess.SubprocessError) as error:
                 raise HTTPException(422, "音频解码或歌词时间无效") from error
@@ -245,6 +272,7 @@ def create_app(config, backend, monitor=None, idle_callback=None):
                     if not future.done():
                         future.cancel()
                 await file.close()
+                progress.pop(request_id, None)
                 state["active"] -= 1
                 state["last_used"] = time.monotonic()
                 gc.collect()

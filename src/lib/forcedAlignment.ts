@@ -16,7 +16,7 @@ export function forcedUrl(value: string, endpoint = 'alignments') {
   url.pathname = `${base || '/v1'}/${endpoint}`;
   return url.href;
 }
-export type ForcedHealth = { service: 'xianqiji-forced-aligner'; protocol: 1; model: string; ready: boolean; resource_ready: boolean; reason?: string; concurrency: number };
+export type ForcedHealth = { service: 'xianqiji-forced-aligner'; protocol: 1; model: string; ready: boolean; resource_ready: boolean; reason?: string; concurrency: number; progress?: { trackId: string; total: number; processed: number; matched: number }[] };
 export async function checkForcedAlignment(config: Pick<ForcedAlignConfig, 'url' | 'key' | 'model'>, signal?: AbortSignal): Promise<ForcedHealth> {
   forcedUrl(config.url, 'health');
   let value: ForcedHealth;
@@ -45,30 +45,53 @@ export function forcedTargets(track: Pick<Track, 'lyrics' | 'duration'>, lineIds
     return Number.isFinite(end) && end > line.time ? [{ id, text: line.text, start: line.time, end, units: singingUnits(line.text) }] : [];
   });
 }
-export async function generateForcedAlignment(track: Track, config: ForcedAlignConfig, signal: AbortSignal, options: { lineIds?: number[]; stage?(message: string): void; request?: typeof requestAudioAI; prepare?: typeof prepareAlignmentAudio } = {}): Promise<AlignmentResult> {
+export async function generateForcedAlignment(track: Track, config: ForcedAlignConfig, signal: AbortSignal, options: { lineIds?: number[]; stage?(message: string): void; request?: typeof requestAudioAI; prepare?: typeof prepareAlignmentAudio; health?: typeof checkForcedAlignment } = {}): Promise<AlignmentResult> {
   const targets = forcedTargets(track, options.lineIds);
   if (!targets.length) return { lyrics: track.lyrics, matched: 0, unmatched: 0, existing: track.lyrics.filter((line) => !!timedWords(line)).length };
   if (!config.key.trim() || !config.model.trim()) throw new Error('请先配置强对齐服务地址、模型名称和本地服务密钥。');
   options.stage?.('正在向强对齐服务提交音频与原歌词…');
   const audio = await (options.prepare || prepareAlignmentAudio)(track, signal);
   signal.throwIfAborted();
-  const data = await (options.request || requestAudioAI)({ id: crypto.randomUUID(), url: forcedUrl(config.url), key: config.key, model: config.model, ...audio, alignment: { trackId: track.id, duration: track.duration, lines: targets } }, signal) as { protocol?: number; model?: string; trackId?: string; lines?: { id: number; text: string; words?: { text: string; start: number; end: number }[]; error?: string }[] };
+  options.stage?.(`正在检查整首待处理的 ${targets.length} 句…`);
+  let finished = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  async function poll() {
+    try {
+      const health = await (options.health || checkForcedAlignment)(config, signal);
+      const current = health.progress?.find((item) => item.trackId === track.id);
+      if (!finished && !signal.aborted && current && Number.isInteger(current.processed) && Number.isInteger(current.total) && Number.isInteger(current.matched)) options.stage?.(`已检查 ${current.processed} / ${current.total} 句，通过 ${current.matched} 句；其余继续处理…`);
+    } catch { /* Progress is optional; the alignment request reports failures. */ }
+    if (!finished && !signal.aborted) timer = setTimeout(() => void poll(), 2000);
+  }
+  if (options.stage) timer = setTimeout(() => void poll(), 2000);
+  let data: { protocol?: number; model?: string; trackId?: string; lines?: { id: number; text: string; words?: { text: string; start: number; end: number }[]; error?: string }[] };
+  try {
+    data = await (options.request || requestAudioAI)({ id: crypto.randomUUID(), url: forcedUrl(config.url), key: config.key, model: config.model, ...audio, alignment: { trackId: track.id, duration: track.duration, lines: targets } }, signal) as typeof data;
+  } finally { finished = true; clearTimeout(timer); }
   signal.throwIfAborted();
   if (data.protocol !== 1 || data.model !== config.model || data.trackId !== track.id || !Array.isArray(data.lines)) throw new Error('强对齐返回的歌曲、模型或协议不匹配，原歌词保留。');
   const lyrics = [...track.lyrics]; const seen = new Set<number>(); let matched = 0;
+  const issues: NonNullable<AlignmentResult['issues']> = [];
   for (const item of data.lines) {
     const target = targets.find((line) => line.id === item?.id);
     if (!target || seen.has(target.id) || item.text !== target.text) throw new Error('强对齐改动了原歌词或行号，原歌词保留。');
     seen.add(target.id);
-    if (item.error || !Array.isArray(item.words) || item.words.length !== target.units.length) continue;
+    if (item.error || !Array.isArray(item.words) || item.words.length !== target.units.length) {
+      issues.push({ line: target.id + 1, reason: typeof item.error === 'string' ? item.error.slice(0, 240) : '返回的字词数量不完整' }); continue;
+    }
     let previous = target.start;
     const valid = item.words.every((word, index) => {
       const ok = word.text === target.units[index] && Number.isFinite(word.start) && Number.isFinite(word.end) && word.start >= previous && word.end > word.start && word.end <= target.end + .001;
       previous = word.end; return ok;
     });
-    if (!valid) continue;
+    if (!valid) { issues.push({ line: target.id + 1, reason: '返回的字词与原文不符，或时间交叉、越过原句范围' }); continue; }
     const words = item.words.map((word) => ({ text: word.text, time: word.start, endTime: word.end }));
     lyrics[target.id] = { ...lyrics[target.id], words, endTime: words.at(-1)!.endTime, wordTiming: undefined, timingNote: undefined }; matched++;
   }
-  return { lyrics, matched, unmatched: targets.length - matched, existing: track.lyrics.length - targets.length };
+  for (const target of targets) if (!seen.has(target.id)) issues.push({ line: target.id + 1, reason: '服务未返回本句的对齐结果' });
+  return { lyrics, matched, unmatched: targets.length - matched, existing: track.lyrics.length - targets.length, issues };
+}
+
+export function alignmentIssueSummary(issues?: AlignmentResult['issues']) {
+  return issues?.length ? ` 原因：${issues.slice(0, 3).map((issue) => `第 ${issue.line} 句：${issue.reason}`).join('；')}${issues.length > 3 ? `；另有 ${issues.length - 3} 句，可选中单句重试查看。` : '。'}` : '';
 }
