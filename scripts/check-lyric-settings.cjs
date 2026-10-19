@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 async function main() {
   const root = path.resolve(__dirname, '..');
   const textMode = process.argv.includes('--text');
+  const background = process.argv.includes('--background');
   const profile = path.join(root, 'test-results', `lyric-settings-${Date.now()}`);
   const env = { ...process.env, TINGYU_TEST: '1', TINGYU_TEST_DATA: profile }; delete env.ELECTRON_RUN_AS_NODE;
   let app;
@@ -55,6 +56,29 @@ async function main() {
     await page.getByRole('button', { name: '打开歌词设置', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '歌词设置', exact: true });
     await dialog.getByLabel('歌词歌曲', { exact: true }).selectOption(id);
+    if (background) {
+      await app.evaluate(() => { globalThis.delayTiming = true; });
+      await dialog.getByRole('button', { name: 'AI 重新生成整首', exact: true }).click();
+      await page.getByRole('button', { name: '关闭歌词设置', exact: true }).click();
+      await dialog.waitFor({ state: 'hidden' });
+      await page.getByRole('button', { name: '传输任务', exact: true }).first().click();
+      const activity = page.locator('.transfer-task').filter({ hasText: '生成逐字时间 ·' });
+      await activity.getByText('待核对保存', { exact: true }).waitFor();
+      assert.deepEqual((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id).metadata.lyrics, fixtureLyrics);
+      await activity.getByRole('button', { name: '查看草稿', exact: true }).click();
+      await dialog.getByRole('button', { name: '保存歌词时间', exact: true }).click();
+      await dialog.getByText('逐字时间已保存，主窗口和桌面歌词已更新。', { exact: true }).waitFor();
+      const saved = (await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).find((record) => record.metadata.id === id);
+      assert.ok(saved.metadata.lyrics.every((line) => line.words?.length));
+      assert.equal(saved.metadata.lyrics[0].translation, fixtureLyrics[0].translation);
+      const calls = await app.evaluate(() => globalThis.manualTimingCalls.length);
+      await page.getByRole('button', { name: '关闭歌词设置', exact: true }).click();
+      await page.reload(); await page.waitForSelector('.track-row');
+      assert.equal(await app.evaluate(() => globalThis.manualTimingCalls.length), calls);
+      assert.deepEqual(errors, []);
+      console.log('PASS manually started AI continues after hiding editor; task center reopens the original draft; no automatic save, no paid real requests or restart retries; Chinese retained');
+      return;
+    }
     await page.locator('audio').evaluate((audio) => { audio.muted = true; });
     await dialog.getByRole('button', { name: '播放所选歌曲', exact: true }).click();
     await page.waitForFunction(async (id) => (await window.tingyuDesktop.getSnapshot()).title && localStorage.getItem('tingyu-current') === id, id);

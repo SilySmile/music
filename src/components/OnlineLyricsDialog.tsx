@@ -4,10 +4,11 @@ import type { AIConfig, LyricLine, Track } from '../types';
 import { findLyrics, languages, needsTranslation, translateMissingLyrics, type LyricCandidate } from '../lib/onlineLyrics';
 import { translateWithAI, uniqueMissingLines } from '../lib/aiTranslation';
 import { cacheTranslation, getCachedTranslation } from '../lib/storage';
+import { beginBackgroundTask, type BackgroundHandle } from '../lib/backgroundTasks';
 
 type LyricPatch = Pick<Track, 'lyrics' | 'lyricsSource' | 'translationSource' | 'onlineUpdatedAt' | 'translationAudit'>;
 
-export default function OnlineLyricsDialog({ track, aiConfig, onSave, onClose, onConfigure }: { track: Track; aiConfig: AIConfig; onSave(patch: LyricPatch): Promise<void>; onClose(): void; onConfigure(): void }) {
+export default function OnlineLyricsDialog({ track, aiConfig, onSave, onClose, onConfigure, onBusy, blocked = false }: { track: Track; aiConfig: AIConfig; onSave(patch: LyricPatch): Promise<void>; onClose(): void; onConfigure(): void; onBusy(value: boolean): void; blocked?: boolean }) {
   const [title, setTitle] = useState(track.title);
   const [artist, setArtist] = useState(track.artist === '未知艺术家' ? '' : track.artist);
   const [results, setResults] = useState<LyricCandidate[]>([]);
@@ -26,6 +27,7 @@ export default function OnlineLyricsDialog({ track, aiConfig, onSave, onClose, o
   const draftRef = useRef({ lyrics: track.lyrics, lyricsSource: track.lyricsSource, translationSource: track.translationSource });
   const [draft, setDraft] = useState(draftRef.current);
   const mountedRef = useRef(true);
+  useEffect(() => { onBusy(!!working); }, [working, onBusy]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -35,27 +37,33 @@ export default function OnlineLyricsDialog({ track, aiConfig, onSave, onClose, o
   const replaceDraft = (next: typeof draft) => { draftRef.current = next; setDraft(next); };
 
   async function searchOnline() {
-    if (operationLock.current) return;
+    if (operationLock.current || blocked) return;
     operationLock.current = true;
     controllerRef.current = new AbortController();
     setWorking('search'); setStatus('正在查询 LRCLIB…'); setSelected(null); setResults([]);
+    let job: BackgroundHandle | undefined;
+    let failed = false;
     try {
+      job = await beginBackgroundTask({ id: 'lyric-search', title: `查找歌词 · ${track.title}`, view: 'online', controller: controllerRef.current });
       const candidates = await findLyrics(title, artist, track.duration, controllerRef.current.signal);
       if (!mountedRef.current) return;
       setResults(candidates);
       setStatus(candidates.length ? `找到 ${candidates.length} 个版本，请核对歌手、专辑和时长后选择。` : '未找到可用歌词。可修改歌名、去掉歌手重搜，或导入本地 LRC。纯音乐可能没有歌词。');
-    } catch (error) { if (mountedRef.current) setStatus(controllerRef.current.signal.aborted ? '查询已取消。' : `查询失败：${error instanceof Error ? error.message : '请检查网络后重试。'}`); }
-    finally { operationLock.current = false; if (mountedRef.current) setWorking(null); }
+    } catch (error) { failed = true; if (mountedRef.current) setStatus(controllerRef.current.signal.aborted ? '查询已取消。' : `查询失败：${error instanceof Error ? error.message : '请检查网络后重试。'}`); }
+    finally { await job?.finish(controllerRef.current.signal.aborted ? 'paused' : failed ? 'failed' : 'completed', '歌词查询结束，可返回窗口核对版本。'); operationLock.current = false; if (mountedRef.current) setWorking(null); }
   }
 
   async function translate(lines: LyricLine[], source = draftRef.current.lyricsSource) {
-    if (operationLock.current) return;
+    if (operationLock.current || blocked) return;
     operationLock.current = true;
     controllerRef.current = new AbortController();
     setWorking('translate'); setStatus('正在准备翻译…'); setUsage('');
+    let job: BackgroundHandle | undefined;
+    let failed = false;
     try {
+      job = await beginBackgroundTask({ id: 'lyric-translation', title: `翻译与校对 · ${track.title}`, view: 'online', controller: controllerRef.current });
       const song = { title: selected?.title || title.trim() || track.title, artist: selected?.artist || artist.trim() || track.artist, album: selected?.album || track.album };
-      const options = { song, retranslate: provider === 'ai' && retranslate && !selected, signal: controllerRef.current.signal, cache: { get: getCachedTranslation, set: cacheTranslation }, onStage: (text: string) => { if (mountedRef.current) setStage(text); }, onProgress: (completed: number, total: number) => { if (mountedRef.current) setProgress({ completed, total }); } };
+      const options = { song, retranslate: provider === 'ai' && retranslate && !selected, signal: controllerRef.current.signal, cache: { get: getCachedTranslation, set: cacheTranslation }, onStage: (text: string) => { job?.progress(text); if (mountedRef.current) setStage(text); }, onProgress: (completed: number, total: number) => { job?.progress(`已核对 ${completed} / ${total} 句`); if (mountedRef.current) setProgress({ completed, total }); } };
       const result = await (async () => {
         if (provider !== 'ai') return translateMissingLyrics(lines, language, options);
         const translated = await translateWithAI(lines, aiConfig, language, options);
@@ -71,12 +79,12 @@ export default function OnlineLyricsDialog({ track, aiConfig, onSave, onClose, o
       }
       if (!mountedRef.current) return;
       setStatus(result.error || (result.cancelled ? `已取消，已保留 ${result.translatedCount} 行新译文；已提交的请求仍可能计费。` : result.translatedCount ? `已保存 ${result.translatedCount} 行中文译文${result.remaining ? `，还有 ${result.remaining} 行可继续翻译` : '，以后离线也能看'}。` : '没有需要翻译的缺失行；已有译文和中文原文会保留。'));
-    } catch (error) { if (mountedRef.current) setStatus(error instanceof Error ? error.message : '翻译失败，请稍后重试。'); }
-    finally { operationLock.current = false; if (mountedRef.current) setWorking(null); }
+    } catch (error) { failed = true; if (mountedRef.current) setStatus(error instanceof Error ? error.message : '翻译失败，请稍后重试。'); }
+    finally { await job?.finish(controllerRef.current.signal.aborted ? 'paused' : failed ? 'failed' : 'completed', '翻译任务已结束；已核对译文按原流程保存，请查看结果。取消或中断不会自动重新计费。'); operationLock.current = false; if (mountedRef.current) setWorking(null); }
   }
 
   async function useCandidate(withTranslation: boolean) {
-    if (!selected || operationLock.current) return;
+    if (!selected || operationLock.current || blocked) return;
     operationLock.current = true; setWorking('save');
     try {
       const source = `LRCLIB #${selected.id}`;
@@ -107,7 +115,7 @@ export default function OnlineLyricsDialog({ track, aiConfig, onSave, onClose, o
     finally { operationLock.current = false; setWorking(null); }
   }
 
-  return <div className="modal-backdrop online-backdrop"><section className="modal online-dialog" role="dialog" aria-modal="true" aria-labelledby="online-title"><div className="modal-heading"><div><span className="eyebrow">LYRICS, A LITTLE CLOSER</span><h2 id="online-title">联网补全歌词与译文</h2></div><button className="icon-button" aria-label="关闭联网歌词" disabled={!!working} onClick={onClose}><X size={20} /></button></div>
+  return <div className="modal-backdrop online-backdrop"><section className="modal online-dialog" role="dialog" aria-modal="true" aria-labelledby="online-title"><div className="modal-heading"><div><span className="eyebrow">LYRICS, A LITTLE CLOSER</span><h2 id="online-title">联网补全歌词与译文</h2></div><button className="icon-button" aria-label="关闭联网歌词" title={working ? '后台继续处理' : '关闭'} onClick={onClose}><X size={20} /></button></div>
     <div className="online-search-fields"><label>歌名<input aria-label="联网歌词歌名" value={title} disabled={!!working} onChange={(event) => setTitle(event.target.value)} /></label><label>歌手<input aria-label="联网歌词歌手" value={artist} disabled={!!working} onChange={(event) => setArtist(event.target.value)} placeholder="不确定可以留空" /></label><button className="button primary" disabled={!!working || !title.trim()} onClick={() => void searchOnline()}>{working === 'search' ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />}搜索歌词</button></div>
     {results.length > 0 && <div className="lyric-results" aria-label="歌词搜索结果">{results.map((candidate) => <button key={candidate.id} className={selected?.id === candidate.id ? 'candidate chosen' : 'candidate'} disabled={!!working} onClick={() => setSelected(candidate)}><span className="candidate-icon">{candidate.synced ? <MusicLabel /> : <Globe2 size={16} />}</span><span><strong>{candidate.title}</strong><small>{candidate.artist} · {candidate.album || '未知专辑'} · {Math.floor(candidate.duration / 60)}:{String(Math.round(candidate.duration % 60)).padStart(2, '0')}</small></span><em>{candidate.synced ? '同步 LRC' : '纯文本'}</em>{selected?.id === candidate.id && <Check size={15} />}</button>)}</div>}
     {selected && <section className="candidate-preview"><div><strong>歌词预览</strong><span>{selected.lyrics.length} 行 · {selected.synced ? '可同步定位' : '没有时间轴，仅供阅读'}</span></div><pre>{selected.lyrics.slice(0, 8).map((line) => line.text).join('\n')}</pre><p className="field-help">使用这份歌词会替换当前原文；相同原文的已有译文会保留。</p><div className="candidate-actions"><button className="button outline" disabled={!!working} onClick={() => void useCandidate(false)}><Download size={14} />使用这份歌词</button><button className="button primary" disabled={!!working || !canTranslate || (provider === 'ai' && !aiConfig.key)} onClick={() => void useCandidate(true)}><Languages size={14} />保存并翻译中文</button></div></section>}

@@ -5,6 +5,7 @@ import { downloadSourceTrack, listSource, loadSourceConfig, sourceRequest, type 
 import { cloudPreferences, cloudTrack } from './cloudLibrary';
 import { patchTrack, sourceLibraryScope } from './storage';
 import { androidPlayer, prepareAndroidQueue } from './androidPlayback';
+import { beginBackgroundTask, type BackgroundHandle } from './backgroundTasks';
 
 export function useCloudLibrary(onCached: (track: Track) => void) {
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -40,11 +41,14 @@ export function useCloudLibrary(onCached: (track: Track) => void) {
       const controller = new AbortController();
       const operation = { id: track.id, controller, promise: Promise.resolve(undefined as Track | undefined) };
       active.current = operation;
+      let job: BackgroundHandle | undefined;
+      let savedSuccessfully = false;
       try {
+        job = await beginBackgroundTask({ id: `cache:${track.id}`, title: `缓存到音乐库 · ${track.title}`, view: 'transfers', controller });
         const scope = await sourceLibraryScope(); controller.signal.throwIfAborted();
         const { audio: _audio, cover: _cover, cloud: _cloud, ...metadata } = track;
         const record = { ...track.cloud!.record, metadata: { ...metadata, lastPlayed: track.lastPlayed || Date.now() } };
-        let saved = await downloadSourceTrack(record, (value) => { if (mounted.current) setMessage(value); }, controller.signal, async (request, signal) => {
+        let saved = await downloadSourceTrack(record, (value) => { job?.progress(value); if (mounted.current) setMessage(value); }, controller.signal, async (request, signal) => {
           if (scope !== await sourceLibraryScope()) throw new Error('音乐库位置已变化，已停止缓存。');
           return sourceRequest(request, signal);
         });
@@ -55,11 +59,11 @@ export function useCloudLibrary(onCached: (track: Track) => void) {
           await prepareAndroidQueue([saved], () => {}, controller.signal).catch(() => {});
           void androidPlayer.control({ action: 'cached', text: saved.id }).catch(() => {});
         }
-        return saved;
+        savedSuccessfully = true; return saved;
       } catch (error) {
         if (mounted.current && !controller.signal.aborted) setMessage(`缓存未完成，不标记为已缓存：${error instanceof Error ? error.message : '请检查存储空间。'}`);
         return undefined;
-      } finally { if (active.current === operation) active.current = undefined; }
+      } finally { await job?.finish(controller.signal.aborted ? 'paused' : savedSuccessfully ? 'completed' : 'failed', savedSuccessfully ? '已校验并保存到当前本地音乐库。' : '缓存未完成，已保存歌曲保留；可重新点播继续。'); if (active.current === operation) active.current = undefined; }
     }).finally(() => { pending.current.delete(key); if (mounted.current) setCaching(pending.current.size > 0); });
     pending.current.set(key, promise); tail.current = promise;
     return promise;

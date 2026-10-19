@@ -50,10 +50,12 @@ export function androidLibraryBridge(target?: string) {
   };
 }
 
-export async function copyAndroidLibrary(selection: LibrarySelection, tracks: Track[], cache: [string, string][], onProgress: (progress: LibraryProgress) => void) {
+export async function copyAndroidLibrary(selection: LibrarySelection, tracks: Track[], cache: [string, string][], onProgress: (progress: LibraryProgress) => void, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   await androidLibrary.create({ target: selection.token });
   const destination = androidLibraryBridge(selection.token);
   for (const [index, track] of tracks.entries()) {
+    signal?.throwIfAborted();
     onProgress({ stage: `复制歌曲 · ${track.title}`, completed: index, total: tracks.length });
     const { audio, cover, ...metadata } = track;
     const token = await destination.beginLibraryTrack(metadata, { size: audio.size, type: audio.type }, cover && { size: cover.size, type: cover.type });
@@ -64,16 +66,17 @@ export async function copyAndroidLibrary(selection: LibrarySelection, tracks: Tr
         if (!media) continue;
         const digest = sha256.create();
         for (let offset = 0; offset < media.size; offset += 1024 * 1024) {
+          signal?.throwIfAborted();
           const bytes = new Uint8Array(await media.slice(offset, offset + 1024 * 1024).arrayBuffer());
           digest.update(bytes);
           await destination.writeLibraryChunk(token, kind, offset, bytes);
         }
         hashes[kind] = Array.from(digest.digest(), (byte) => byte.toString(16).padStart(2, '0')).join('');
       }
-      await destination.finishLibraryTrack(token, hashes);
+      signal?.throwIfAborted(); await destination.finishLibraryTrack(token, hashes);
     } catch (error) { await destination.cancelLibraryTrack(token).catch(() => {}); throw error; }
   }
-  await destination.setLibraryCache(cache);
+  signal?.throwIfAborted(); await destination.setLibraryCache(cache);
   onProgress({ stage: '复制完成，正在核验曲库', completed: tracks.length, total: tracks.length });
   return androidLibrary.activate({ target: selection.token, expectedIds: tracks.map((track) => track.id) });
 }

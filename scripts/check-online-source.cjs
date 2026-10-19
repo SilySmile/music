@@ -7,6 +7,7 @@ const { createHash } = require('node:crypto');
 const assert = require('node:assert/strict');
 
 async function main() {
+  const background = process.argv.includes('--background');
   const root = path.resolve(__dirname, '..'); const directory = path.join(root, 'test-results', `online-source-${Date.now()}`);
   await fs.mkdir(directory, { recursive: true });
   const token = 'test-source-owner-token-not-production'; const hash = (value) => createHash('sha256').update(value).digest('hex');
@@ -19,15 +20,15 @@ async function main() {
   const environment = { ...process.env, TINGYU_TEST: '1' }; delete environment.ELECTRON_RUN_AS_NODE;
   async function launch(name) {
     application = await _electron.launch({ executablePath: process.env.TINGYU_EXECUTABLE || path.join(root, 'node_modules/electron/dist/electron.exe'), args: process.env.TINGYU_EXECUTABLE ? [] : [root], cwd: root, env: { ...environment, TINGYU_TEST_DATA: path.join(directory, name) }, timeout: 60000 });
-    await application.evaluate(({ net }, endpoint) => {
+    await application.evaluate(({ net }, { endpoint, background }) => {
       const original = net.fetch.bind(net);
-      net.fetch = (url, options) => {
+      net.fetch = async (url, options) => {
         const target = new URL(url);
-        if (target.origin === 'https://library.fixture.test' && target.pathname.startsWith('/api/')) return original(endpoint + target.pathname.slice(4) + target.search, options);
+        if (target.origin === 'https://library.fixture.test' && target.pathname.startsWith('/api/')) { if (background && /\/chunk$|\/media\//.test(target.pathname)) await new Promise((resolve) => setTimeout(resolve, 900)); return original(endpoint + target.pathname.slice(4) + target.search, options); }
         if (target.pathname.endsWith('/chat/completions')) throw new Error('Test blocks paid AI');
         return original(url, options);
       };
-    }, endpoint);
+    }, { endpoint, background });
     const page = await application.firstWindow(); page.on('pageerror', (error) => errors.push(error.message)); page.setDefaultTimeout(12000); return page;
   }
   async function configure(page) {
@@ -51,6 +52,15 @@ async function main() {
     assert.equal((await request('/info')).trackCount, 0);
     await source.getByRole('button', { name: '取消', exact: true }).click(); assert.equal((await request('/info')).trackCount, 0);
     await source.getByRole('button', { name: '上传到线上 · 3', exact: true }).click(); await source.getByRole('button', { name: '确认上传', exact: true }).click();
+    if (background) {
+      await page.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+      await page.getByRole('button', { name: '传输任务', exact: true }).first().click();
+      await page.locator('.transfer-task').filter({ hasText: '上传到线上 · 3 首' }).getByText('进行中', { exact: true }).waitFor();
+      await page.getByRole('button', { name: '关闭传输任务', exact: true }).click();
+      await page.locator('.track-row').first().locator('.track-name').click();
+      await page.waitForFunction(() => document.querySelector('audio').currentTime > .1);
+      await page.getByRole('button', { name: '偏好设置', exact: true }).first().click();
+    }
     await source.getByRole('status').filter({ hasText: '上传完成：3 首' }).waitFor({ timeout: 60000 }); assert.equal((await request('/info')).trackCount, 3);
     assert.ok(!(await fs.readFile(path.join(directory, 'device-a/online-source.json'), 'utf8')).includes(token));
     const uploaded = (await request('/tracks')).tracks;
@@ -59,7 +69,25 @@ async function main() {
     await source.getByRole('button', { name: '选择当前列表', exact: true }).click(); await source.getByRole('button', { name: '下载 / 补充到本地 · 3', exact: true }).click();
     assert.equal((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).length, 0);
     await source.getByRole('button', { name: '确认下载并保存', exact: true }).click();
-    await source.getByRole('status').filter({ hasText: '下载 / 补充完成：3 首' }).waitFor({ timeout: 60000 }); assert.equal(await page.locator('.track-row').count(), 3);
+    if (background) {
+      await page.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+      await page.waitForFunction(async () => (await window.tingyuDesktop.listLibraryTracks()).length === 1);
+      await page.getByRole('button', { name: '传输任务', exact: true }).first().click();
+      const task = page.locator('.transfer-task').filter({ hasText: '下载 / 补充到本地 · 3 首' });
+      await task.getByRole('button', { name: '暂停并保存进度', exact: true }).click();
+      await task.getByText('已暂停', { exact: true }).waitFor();
+      assert.ok((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).length < 3);
+      await application.close(); application = null;
+      page = await launch('device-b'); await page.waitForSelector('.track-row');
+      await page.getByRole('button', { name: '传输任务', exact: true }).first().click();
+      await page.locator('.transfer-task').filter({ hasText: '下载 / 补充到本地 · 3 首' }).getByRole('button', { name: '继续传输', exact: true }).click();
+      source = page.locator('.online-source-settings');
+      await page.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+      await page.waitForFunction(async () => (await window.tingyuDesktop.listLibraryTracks()).length === 3, { timeout: 60000 });
+      source = await configure(page);
+      console.log('PASS background upload while playing, download after closing settings, task-center pause and app-restart resume without reimporting completed songs');
+    }
+    if (!background) await source.getByRole('status').filter({ hasText: '下载 / 补充完成：3 首' }).waitFor({ timeout: 60000 }); assert.equal(await page.locator('.track-row').count(), 3);
     const records = await page.evaluate(() => window.tingyuDesktop.listLibraryTracks());
     for (const record of records) { const original = uploaded.find((track) => track.metadata.id === record.metadata.id); assert.equal(record.audio.sha256, original.audio.sha256); assert.deepEqual(record.metadata.lyrics, original.metadata.lyrics); }
     const rival = uploaded[0];
@@ -78,6 +106,9 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('[aria-label="在线曲库访问密钥"]')?.value);
     assert.equal(await page.getByLabel('在线曲库访问密钥', { exact: true }).inputValue(), token); assert.deepEqual(errors, []);
     console.log('PASS local real HTTP + Electron IPC: confirmed uploads, 3 demo songs/cover/bilingual lyrics across isolated devices, SHA-256, encrypted credentials/restart, duplicate upload success without overwriting remote edits and no paid AI/renderer errors');
+  } catch (error) {
+    if (application) { const page = await application.firstWindow(); console.error('Source test state:', await page.locator('.online-source-settings [role="status"]').allTextContents()); await page.screenshot({ path: path.join(directory, 'failure.png') }).catch(() => {}); }
+    throw error;
   } finally { if (application) await application.close(); backend.kill(); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

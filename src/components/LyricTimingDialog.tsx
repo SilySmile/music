@@ -9,6 +9,7 @@ import { timedWords } from '../lib/lyricTiming';
 import { sourceLibraryScope } from '../lib/storage';
 import { applyLineTimeDraft, changeSingingEnd, createLineTimeDraft, lineTimeEnd, prepareLyricRegeneration, timingFingerprint, type LineTimeDraft } from '../lib/lyricTimingEditor';
 import TimedLyricText from './TimedLyricText';
+import { beginBackgroundTask, completeBackgroundTask, type BackgroundHandle } from '../lib/backgroundTasks';
 
 type Props = { tracks: Track[]; currentId: string; position: number; playing: boolean; config: AIConfig; blocked: boolean; onBusy(value: boolean): void; onSeek(time: number): void; onTogglePlay(): void; onPlayTrack(id: string): void; onSave(id: string, expected: string, lyrics: LyricLine[]): Promise<void>; onClose(): void };
 export default function LyricTimingDialog(props: Props) {
@@ -64,19 +65,23 @@ function SongTimingEditor(props: Props & { track: Track; trackId: string; onSele
   async function save() {
     if (disabled) return;
     setSaving(true); setMessage('');
-    try { await ensureCurrent(); const next = collect(true); await props.onSave(track.id, baseline, next); if (!alive.current) return; setLyrics(next); setDrafts({}); setAIDirty(false); setBaseline(timingFingerprint(next)); setMessage('逐字时间已保存，主窗口和桌面歌词已更新。'); }
+    try { await ensureCurrent(); const next = collect(true); await props.onSave(track.id, baseline, next); if (!alive.current) return; setLyrics(next); setDrafts({}); setAIDirty(false); setBaseline(timingFingerprint(next)); completeBackgroundTask('lyric-timing', '逐字时间已核对并保存到当前音乐库。'); setMessage('逐字时间已保存，主窗口和桌面歌词已更新。'); }
     catch (error) { if (alive.current) setMessage(error instanceof Error ? error.message : '保存失败，原歌词保留。'); }
     finally { if (alive.current) setSaving(false); }
   }
   async function generate(mode: 'line' | 'missing' | 'all') {
     if (disabled || controller.current || !line) return;
     const abort = new AbortController(); controller.current = abort; setRunning(true); props.onBusy(true); setMessage('正在生成逐字时间…');
+    let job: BackgroundHandle | undefined;
+    let generatedDraft = false;
+    let failed = false;
     try {
+      job = await beginBackgroundTask({ id: 'lyric-timing', title: `生成逐字时间 · ${track.title}`, view: 'lyric-settings', controller: abort });
       await ensureCurrent();
       const next = mode === 'all' ? lyrics : collect(false, mode === 'line' ? lineIndex : undefined);
       const input = { ...track, lyrics: mode === 'missing' ? next : prepareLyricRegeneration({ ...track, lyrics: next }, mode === 'line' ? { [lineIndex]: draft } : drafts, mode === 'line' ? [lineIndex] : undefined) };
       if (!(config.alignmentMode === 'forced' ? needsForcedAlignment(input) : needsWordAlignment(input)) || (mode === 'line' && !vocalLine(input.lyrics[lineIndex]))) { setMessage('当前范围已有逐字时间或没有演唱文本，已跳过，未调用 AI。'); return; }
-      const options = { stage: (message: string) => { if (alive.current) setMessage(message); } };
+      const options = { stage: (message: string) => { job?.progress(message); if (alive.current) setMessage(message); } };
       if (config.alignmentMode === 'forced') {
         const health = await checkForcedAlignment(readForcedConfig(config.forced), abort.signal);
         if (!health.ready || !health.resource_ready) throw new Error(health.reason || '强对齐服务暂未就绪，请稍后重试。');
@@ -87,10 +92,11 @@ function SongTimingEditor(props: Props & { track: Track; trackId: string; onSele
       const replaced = new Set(result.lyrics.flatMap((line, index) => (mode !== 'line' || index === lineIndex) && (!timedWords(input.lyrics[index]) || (config.alignmentMode === 'forced' && input.lyrics[index].wordTiming === 'estimated' && line.wordTiming !== 'estimated')) && timedWords(line) ? [index] : []));
       if (!replaced.size) { setMessage(`${config.alignmentMode === 'forced' ? `已检查 ${result.rounds || 1} 轮，仍有 ${result.unmatched} 句待复核` : '当前范围没有可生成的句子'}，原时间已保留。${alignmentIssueSummary(result.issues)}`); return; }
       const generated = next.map((line, index) => replaced.has(index) ? result.lyrics[index] : line);
+      generatedDraft = true;
       const remaining = config.alignmentMode === 'forced' ? result.unmatched : input.lyrics.filter((line, index) => (mode !== 'line' || index === lineIndex) && vocalLine(line) && !timedWords(line)).length - replaced.size;
       setLyrics(generated); setDrafts(mode === 'all' ? Object.fromEntries(Object.entries(drafts).filter(([index]) => !replaced.has(Number(index)))) : {}); setAIDirty(true); setMessage(remaining > 0 ? `AI 已生成 ${replaced.size} 句，${remaining} 句未匹配并保留原时间；${config.alignmentMode === 'forced' ? result.interrupted ? '资源或服务暂不可用，剩余句子可稍后继续；' : `已尝试 ${result.rounds || 1} 轮不同上下文，剩余句子待复核；` : ''}可继续调整，保存后生效。${alignmentIssueSummary(result.issues)}` : 'AI 生成完成，可继续调整；点击“保存歌词时间”后生效。');
-    } catch (error) { if (alive.current) setMessage(abort.signal.aborted ? '生成已取消，未保存的调整保留。' : error instanceof Error ? error.message : '生成失败，原歌词保留。'); }
-    finally { if (controller.current === abort) controller.current = null; if (alive.current) { setRunning(false); props.onBusy(false); } }
+    } catch (error) { failed = true; if (alive.current) setMessage(abort.signal.aborted ? '生成已取消，未保存的调整保留。' : error instanceof Error ? error.message : '生成失败，原歌词保留。'); }
+    finally { await job?.finish(abort.signal.aborted ? 'paused' : failed ? 'failed' : generatedDraft ? 'review' : 'completed', generatedDraft ? '逐字时间已生成草稿，返回歌词设置核对并保存后生效。' : '生成已结束，未通过的原时间保留；付费请求不会自动重发。'); if (controller.current === abort) controller.current = null; if (alive.current) { setRunning(false); props.onBusy(false); } }
   }
   function restore() { setLyrics(structuredClone(track.lyrics)); setBaseline(timingFingerprint(track.lyrics)); setDrafts({}); setAIDirty(false); scope.current = sourceLibraryScope().catch(() => ''); setMessage('已还原为当前保存的歌词。'); }
   return <>
@@ -112,6 +118,6 @@ function SongTimingEditor(props: Props & { track: Track; trackId: string; onSele
     </>}
     {conflict && <p className="timing-error" role="alert">歌词已在别处更新，请还原未保存修改后继续，避免覆盖新歌词。</p>}
     {message && <p className="timing-status" role="status">{message}</p>}
-    <div className="timing-actions timing-save"><button className="button" disabled={disabled || !line || !draft.words.length} onClick={() => void save()}><Save size={15} />{saving ? '保存中…' : '保存歌词时间'}</button><button className="button outline" disabled={running || saving} onClick={restore}>还原未保存修改</button><button className="button outline" title="关闭窗口，未保存的草稿将放弃" onClick={props.onClose}>关闭</button></div>
+    <div className="timing-actions timing-save"><button className="button" disabled={disabled || !line || !draft.words.length} onClick={() => void save()}><Save size={15} />{saving ? '保存中…' : '保存歌词时间'}</button><button className="button outline" disabled={running || saving} onClick={restore}>还原未保存修改</button><button className="button outline" title="生成时关闭窗口转入后台，草稿完成后在任务中心核对并保存" onClick={props.onClose}>关闭</button></div>
   </>;
 }

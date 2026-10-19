@@ -32,6 +32,7 @@ async function main() {
         NativePlayback: ['state', 'control', 'addListener', 'removeListener'],
         SecureConfig: ['loadKey'],
         AppUpdates: ['config', 'state', 'addListener', 'removeListener'],
+        BackgroundTasks: ['begin', 'update', 'finish', 'addListener', 'removeListener'],
       };
       const count = (key) => localStorage.setItem(`mock-${key}`, String(Number(localStorage.getItem(`mock-${key}`) || 0) + 1));
       window.Capacitor = {
@@ -39,6 +40,7 @@ async function main() {
         nativeCallback: () => 'listener',
         nativePromise: async (plugin, method, options = {}) => {
           if (method === 'removeListener') return {};
+          if (plugin === 'BackgroundTasks') { count(`background-${method}`); return {}; }
           if (plugin === 'NativePlayback') return { active: false };
           if (plugin === 'SecureConfig') return { key: '', path: '/private/no_backup/config/ai-config.json' };
           if (plugin === 'AppUpdates') return method === 'config' ? { currentVersion: '1.0.2', platform: 'android', baseUrl: 'https://updates.example/music/', autoCheck: false, lastChecked: 0 } : { phase: 'idle', currentVersion: '1.0.2', bytes: 0, total: 0 };

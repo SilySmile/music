@@ -4,6 +4,7 @@ import { androidLibrary, copyAndroidLibrary, type AndroidLibraryInfo, type Libra
 import { getAndroidTranslationEntries, getTracks } from '../lib/storage';
 import { androidPlayer } from '../lib/androidPlayback';
 import type { LibraryProgress } from '../types';
+import { beginBackgroundTask, type BackgroundHandle } from '../lib/backgroundTasks';
 
 export default function AndroidStorageSettings({ blocked, trackCount, onError }: { blocked: boolean; trackCount: number; onError(message: string): void }) {
   const [info, setInfo] = useState<AndroidLibraryInfo | null>(null);
@@ -28,16 +29,19 @@ export default function AndroidStorageSettings({ blocked, trackCount, onError }:
   }
   async function activate() {
     if (!candidate) return;
-    setWorking(true); setProgress(null); setStatus('正在处理，请保持前台，不要修改文件或拔出存储卡。');
+    setWorking(true); setProgress(null); setStatus('正在后台复制与核验，不要修改文件或拔出存储卡。');
+    let job: BackgroundHandle | undefined;
     window.dispatchEvent(new CustomEvent('tingyu-library-switching', { detail: true }));
     try {
+      job = await beginBackgroundTask({ id: 'library-migration', title: candidate.mode === 'copy' ? '复制并切换音乐库' : '核验并打开已有音乐库', view: 'settings' });
       await androidPlayer.control({ action: 'stop' });
-      if (candidate.mode === 'copy') await copyAndroidLibrary(candidate, await getTracks(), await getAndroidTranslationEntries(), setProgress);
+      if (candidate.mode === 'copy') await copyAndroidLibrary(candidate, await getTracks(), await getAndroidTranslationEntries(), (value) => { setProgress(value); job?.progress(`${value.stage} · ${value.completed} / ${value.total}`); }, job.signal);
       else await androidLibrary.activate({ target: candidate.token });
-      window.location.reload();
+      await job.finish('completed', '音乐库校验与切换已完成。'); window.location.reload();
     } catch (error) {
       setStatus(`${error instanceof Error ? error.message : '操作失败'}。当前曲库保留；复制失败的目标可能含部分已完成歌曲，请勿当作完整备份。`);
       window.dispatchEvent(new CustomEvent('tingyu-library-switching', { detail: false })); setWorking(false); setCandidate(null);
+      await job?.finish(job.signal.aborted ? 'paused' : 'failed', '原曲库保留；复制目标可能尚未完整，请核对后重新选择空目录。');
     }
   }
   async function useDatabase() {

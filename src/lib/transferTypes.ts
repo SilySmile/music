@@ -39,4 +39,18 @@ export type ExportTask = {
   location?: string;
   error?: string;
 };
-export type TransferTask = ImportTask | ExportTask;
+export type SourceTransferTask = {
+  libraryKey?: string;
+  id: string;
+  kind: 'source';
+  direction: 'upload' | 'download';
+  label: string;
+  sourceIdentity: string;
+  scope: string;
+  ids: string[];
+  completed: string[];
+  status: TransferStatus;
+  updatedAt: number;
+  error?: string;
+};
+export type TransferTask = ImportTask | ExportTask | SourceTransferTask;

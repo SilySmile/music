@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, RefreshCw, ShieldCheck } from 'lucide-react';
 import { checkUpdate, currentUpdateState, downloadUpdate, initialUpdateState, installUpdate, onUpdateState, pauseUpdate, saveUpdateConfig, updateConfig, updatesSupported, type UpdateConfig } from '../lib/appUpdates';
+import { beginBackgroundTask, type BackgroundHandle } from '../lib/backgroundTasks';
 
 export default function UpdateSettings({ blocked = false }: { blocked?: boolean }) {
   const [config, setConfig] = useState<UpdateConfig | null>(null);
@@ -10,6 +11,8 @@ export default function UpdateSettings({ blocked = false }: { blocked?: boolean 
   const [working, setWorking] = useState(false);
   const [confirmInstall, setConfirmInstall] = useState(false);
   const [status, setStatus] = useState('');
+  const task = useRef<BackgroundHandle | undefined>(undefined);
+  const downloadLock = useRef(false);
   const supported = updatesSupported();
   const busy = working || state.phase === 'checking' || state.phase === 'downloading';
   const dirty = !!config && (address !== config.baseUrl || automatic !== config.autoCheck);
@@ -22,6 +25,19 @@ export default function UpdateSettings({ blocked = false }: { blocked?: boolean 
     }
     return () => { active = false; remove?.(); };
   }, [supported]);
+  useEffect(() => { if (state.phase === 'downloading') task.current?.progress(`下载更新 · ${(state.bytes / 1024 / 1024).toFixed(1)} / ${(state.total / 1024 / 1024).toFixed(1)} MB`); }, [state]);
+  async function download() {
+    if (downloadLock.current) return;
+    downloadLock.current = true; setStatus('');
+    const pause = () => { void pauseUpdate().catch(() => {}); };
+    try {
+      task.current = await beginBackgroundTask({ id: 'software-update', title: '下载并校验软件更新', view: 'settings' });
+      task.current.signal.addEventListener('abort', pause, { once: true });
+      const result = await downloadUpdate(); setState(result);
+      await task.current.finish(result.phase === 'downloaded' ? 'completed' : result.phase === 'paused' ? 'paused' : 'failed', result.message);
+    } catch (error) { await task.current?.finish('failed', error instanceof Error ? error.message : '更新下载失败。'); setStatus(error instanceof Error ? error.message : '更新下载失败。'); }
+    finally { task.current?.signal.removeEventListener('abort', pause); task.current = undefined; downloadLock.current = false; }
+  }
   async function save() {
     setWorking(true); setStatus(''); setConfirmInstall(false);
     try { const value = await saveUpdateConfig({ baseUrl: address, autoCheck: automatic }); setConfig(value); setAddress(value.baseUrl); setAutomatic(value.autoCheck); setState(initialUpdateState()); setStatus('地址已保存，后续可直接换成自己的 HTTPS 域名。'); }
@@ -45,7 +61,7 @@ export default function UpdateSettings({ blocked = false }: { blocked?: boolean 
     {dirty && <p className="field-help">地址或检查选项已修改，请先保存。</p>}
     {state.release && <article className="update-release"><strong>新版本 v{state.release.version} · {(state.release.size / 1024 / 1024).toFixed(1)} MB</strong><pre>{state.release.notes}</pre></article>}
     {state.total > 0 && <div className="update-progress"><progress aria-label="更新下载进度" max={state.total} value={state.bytes} /><small>{(state.bytes / 1024 / 1024).toFixed(1)} / {(state.total / 1024 / 1024).toFixed(1)} MB</small></div>}
-    <div className="storage-buttons">{state.release && state.phase !== 'downloaded' && state.phase !== 'downloading' && <button className="button primary" disabled={busy || dirty} onClick={() => { setStatus(''); void downloadUpdate().then(setState).catch((error) => setStatus(error.message)); }}><ArrowDownToLine size={14} />{state.bytes ? '继续下载更新' : '下载更新'}</button>}{state.phase === 'downloading' && <button className="button outline" onClick={() => void pauseUpdate().then(setState)}>暂停下载</button>}{state.phase === 'downloaded' && <button className="button primary" disabled={busy || dirty || blocked} onClick={() => setConfirmInstall(true)}>{config?.platform === 'android' ? '安装安卓更新' : state.release?.kind === 'portable' ? '查看新版便携包' : '退出并安装更新'}</button>}</div>
+    <div className="storage-buttons">{state.release && state.phase !== 'downloaded' && state.phase !== 'downloading' && <button className="button primary" disabled={busy || dirty} onClick={() => void download()}><ArrowDownToLine size={14} />{state.bytes ? '继续下载更新' : '下载更新'}</button>}{state.phase === 'downloading' && <button className="button outline" onClick={() => void pauseUpdate().then(setState)}>暂停下载</button>}{state.phase === 'downloaded' && <button className="button primary" disabled={busy || dirty || blocked} onClick={() => setConfirmInstall(true)}>{config?.platform === 'android' ? '安装安卓更新' : state.release?.kind === 'portable' ? '查看新版便携包' : '退出并安装更新'}</button>}</div>
     {blocked && state.phase === 'downloaded' && <p className="field-help">请先完成当前导入 / 迁移任务，再退出安装。</p>}
     {confirmInstall && <div className="update-confirm"><p>{config?.platform === 'android' ? '将打开系统覆盖安装器。请勿先卸载，取消安装不影响现有数据。' : state.release?.kind === 'portable' ? '便携版需手动替换启动器，旧 Data 不可删除。' : '将退出播放器并运行覆盖安装，安装到当前程序目录，保留 Data 中的歌曲、歌词和配置。确认前请完成所有传输任务。'}</p><button className="button primary" disabled={working || blocked} onClick={() => void install()}>确认安装更新</button><button className="text-button" disabled={working} onClick={() => setConfirmInstall(false)}>暂不安装</button></div>}
     <p className="field-help update-status" role="status">{status || state.message || (!supported ? '浏览器预览不安装更新，请在 PC 或安卓客户端使用。' : '点击检查更新，下载可暂停并继续。')}</p>

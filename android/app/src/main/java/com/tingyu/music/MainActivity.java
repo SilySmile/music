@@ -11,6 +11,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(TransferFilesPlugin.class);
+        registerPlugin(BackgroundTasksPlugin.class);
         registerPlugin(SecureConfigPlugin.class);
         registerPlugin(NativePlaybackPlugin.class);
         registerPlugin(AppUpdatesPlugin.class);

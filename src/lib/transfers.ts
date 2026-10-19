@@ -6,6 +6,7 @@ import { importFiles } from './importer';
 import { safeFilename, serializeLyrics } from './exporter';
 import { initialZipCheckpoint, runZipCheckpoint } from './zipCheckpoint';
 import { openTransferWriter } from './transferWriter';
+import { beginBackgroundTask } from './backgroundTasks';
 
 export async function filesFingerprint(files: File[]) {
   const digest = sha256.create();
@@ -25,10 +26,16 @@ export async function createImportTask(files: File[]): Promise<ImportTask> {
 }
 
 export async function runImportTask(task: ImportTask, files: File[], signal: AbortSignal, onProgress: (message: string) => void) {
-  if (await filesFingerprint(files) !== task.fingerprint) throw new Error('文件与这个任务不一致，请重新选择原音乐包（多文件导入需全部选择）。');
-  task.status = 'running'; task.error = undefined; task.updatedAt = Date.now();
-  await saveTransfer(task);
+  const job = await beginBackgroundTask({ id: task.id, title: `导入 · ${task.label}`, view: 'import', signal, persistent: true });
+  signal = job.signal;
+  const report = onProgress;
+  onProgress = (message) => { job.progress(message); report(message); };
   try {
+    if (await filesFingerprint(files) !== task.fingerprint) throw new Error('文件与这个任务不一致，请重新选择原音乐包（多文件导入需全部选择）。');
+  } catch (error) { await job.finish('failed', error instanceof Error ? error.message : '源文件读取失败。'); throw error; }
+  task.status = 'running'; task.error = undefined; task.updatedAt = Date.now();
+  try {
+    await saveTransfer(task);
     const result = await importFiles(files, onProgress, {
       signal, completed: new Set(task.completed), collect: false, findExisting: getTrack,
       onTotal: async (total) => { task.total = total; await saveTransfer(task); },
@@ -41,7 +48,7 @@ export async function runImportTask(task: ImportTask, files: File[], signal: Abo
     task.status = signal.aborted ? 'paused' : 'failed';
     task.error = signal.aborted ? undefined : error instanceof Error ? error.message : '导入中断，进度已保留。';
   }
-  task.updatedAt = Date.now(); await saveTransfer(task);
+  task.updatedAt = Date.now(); try { await saveTransfer(task); } finally { await job.finish(task.status, task.error || (task.status === 'completed' ? '导入完成。' : '已暂停，检查点保留。')); }
   return task;
 }
 
@@ -70,10 +77,14 @@ export async function createExportTask(tracks: Track[]): Promise<ExportTask> {
 }
 
 export async function runExportTask(task: ExportTask, signal: AbortSignal, onProgress: (message: string) => void) {
+  const job = await beginBackgroundTask({ id: task.id, title: `导出 · ${task.label}`, view: 'export', signal, persistent: true });
+  signal = job.signal;
+  const report = onProgress;
+  onProgress = (message) => { job.progress(message); report(message); };
   task.status = 'running'; task.error = undefined;
-  await saveTransfer(task);
   let writer: Awaited<ReturnType<typeof openTransferWriter>> | undefined;
   try {
+    await saveTransfer(task);
     writer = await openTransferWriter(task);
     task.location = writer.location;
     let currentTrack: Track | undefined;
@@ -96,6 +107,6 @@ export async function runExportTask(task: ExportTask, signal: AbortSignal, onPro
     task.status = signal.aborted ? 'paused' : 'failed';
     task.error = signal.aborted ? undefined : error instanceof Error ? error.message : '导出中断，分块进度已保存。';
   } finally { await writer?.close(); }
-  task.updatedAt = Date.now(); await saveTransfer(task);
+  task.updatedAt = Date.now(); try { await saveTransfer(task); } finally { await job.finish(task.status, task.error || (task.status === 'completed' ? `导出完成：${task.location}` : '已暂停，分块进度保留。')); }
   return task;
 }

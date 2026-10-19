@@ -119,6 +119,9 @@ async function build(runtime, commit) {
   environment.TINGYU_EXECUTABLE = path.join(directory, 'win-unpacked', '弦栖霁.exe');
   for (const script of ['smoke', 'check-playback', 'check-word-lyrics', 'check-lyric-settings', 'check-updates', 'check-online-source', 'check-auto-source', 'check-library-safety', 'check-cloud-listening', 'check-android-storage-ui', 'check-portable']) await node(`scripts/${script}.cjs`);
   await node('scripts/check-lyric-settings.cjs', ['--text']);
+  await node('scripts/check-background-ui.cjs');
+  await node('scripts/check-online-source.cjs', ['--background']);
+  await node('scripts/check-lyric-settings.cjs', ['--text', '--background']);
   await node('local-aligner/tests/check-player.cjs');
   await node('scripts/check-update-handoff.cjs');
   await node('scripts/check-installer-upgrade.cjs');
