@@ -1,9 +1,10 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { beginBackgroundTask } from './backgroundTasks';
-import { getTrack, saveTransfer, sourceLibraryScope } from './storage';
+import { getTrack, invalidateLibraryTracks, saveTransfer, sourceLibraryScope } from './storage';
 import { downloadSourceTrack, listSource, loadSourceConfig, normalizeSourceUrl, sourceRequest, uploadSourceTrack, type SourceConfig, type SourceRequester } from './onlineSource';
 import type { SourceTransferTask } from './transferTypes';
 import type { Track } from '../types';
+import { nativeSourceDownloads, nativeSourceEnabled, validNativeSourceTask } from './nativeSourceDownloads';
 
 export function sourceIdentity(config: SourceConfig) {
   return Array.from(sha256(new TextEncoder().encode(`${normalizeSourceUrl(config.baseUrl)}|${config.token}`)), (value) => value.toString(16).padStart(2, '0')).join('');
@@ -25,6 +26,20 @@ export async function runSourceTransfer(task: SourceTransferTask, signal: AbortS
       if (task.sourceIdentity !== sourceIdentity(await loadSourceConfig())) throw new Error('音源地址或密钥已改变，请恢复原连接后继续这个任务。');
     };
     await guard(); await saveTransfer({ ...task, updatedAt: Date.now() });
+    if (task.direction === 'download' && nativeSourceEnabled(task.scope)) {
+      const listener = await nativeSourceDownloads.addListener('sourceProgress', (next) => { if (next.id === task.id && validNativeSourceTask(next)) { task.completed = [...next.completed]; progress(next.progress || `原生后台已完成 ${next.completed.length} / ${next.ids.length} 首`); } });
+      const pause = () => { void nativeSourceDownloads.pauseSource({ id: task.id }).catch(() => {}); };
+      job.signal.addEventListener('abort', pause, { once: true });
+      try {
+        job.signal.throwIfAborted();
+        const result = await nativeSourceDownloads.downloadSource({ task, baseUrl: normalizeSourceUrl(config.baseUrl), token: config.token });
+        if (!validNativeSourceTask(result) || result.id !== task.id || result.scope !== task.scope || result.sourceIdentity !== task.sourceIdentity || JSON.stringify(result.ids) !== JSON.stringify(task.ids)) throw new Error('原生下载返回的音乐库或歌曲清单不符，请检查任务中心。');
+        Object.assign(task, result); invalidateLibraryTracks(task.completed);
+        for (const id of task.completed) { const saved = await getTrack(id); if (saved) await onSaved(saved); }
+        progress(result.status === 'completed' ? `下载 / 补充完成：${task.completed.length} 首，已写入当前本地音乐库。` : task.error || `已暂停，已保存 ${task.completed.length} 首。`);
+        return task;
+      } finally { job.signal.removeEventListener('abort', pause); await listener.remove(); }
+    }
     const request: SourceRequester = async (request, signal) => { await guard(); return sourceRequest(request, signal); };
     const remote = task.direction === 'download' ? new Map((await listSource(request, job.signal)).map((record) => [record.metadata.id, record])) : undefined;
     for (const id of task.ids) {

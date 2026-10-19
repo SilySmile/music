@@ -23,12 +23,15 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 @CapacitorPlugin(name = "DocumentLibrary")
 public class DocumentLibraryPlugin extends Plugin {
+    private static volatile DocumentLibraryPlugin instance;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final AtomicBoolean selecting = new AtomicBoolean(false);
     private final Map<String, LibraryDocuments.Node> candidates = new HashMap<>();
@@ -40,11 +43,80 @@ public class DocumentLibraryPlugin extends Plugin {
         LibraryDocuments.Node directory;
         JSONObject metadata;
         JSONObject record;
+        JSONObject source;
+        JSONObject original;
+        String scope;
         Map<String, Long> offsets = new HashMap<>();
     }
 
-    @Override public void load() { documents = new LibraryDocuments(getContext().getContentResolver()); }
-    @Override protected void handleOnDestroy() { worker.shutdownNow(); }
+    @Override public void load() { documents = new LibraryDocuments(getContext().getContentResolver()); instance = this; }
+    @Override protected void handleOnDestroy() { NativeSourceDownloads.pauseAll(); if (instance == this) instance = null; worker.shutdownNow(); }
+    static DocumentLibraryPlugin current() throws Exception { DocumentLibraryPlugin current = instance; if (current == null) throw new Exception("音乐库服务未就绪，请重新打开应用"); return current; }
+    private <Result> Result nativeOperation(Callable<Result> operation) throws Exception {
+        try { return worker.submit(() -> { documents.reset(); return operation.call(); }).get(); }
+        catch (ExecutionException error) { if (error.getCause() instanceof Exception) throw (Exception) error.getCause(); throw new Exception("音乐库操作失败，原曲库保留"); }
+    }
+    private LibraryDocuments.Node sourceRoot(String scope) throws Exception {
+        LibraryDocuments.Node selected = root(null); JSONObject index = index(selected);
+        if (!scope.equals("folder:" + index.getString("libraryId"))) throw new Exception("下载任务属于另一音乐库，请切回原库继续");
+        return selected;
+    }
+    void checkSourceScope(String scope) throws Exception { nativeOperation(() -> { sourceRoot(scope); return null; }); }
+    String beginSourceDownload(String scope, JSONObject source) throws Exception {
+        return nativeOperation(() -> {
+            Upload upload = new Upload(); upload.root = sourceRoot(scope); upload.scope = scope; upload.source = new JSONObject(source.toString()); String identifier = source.getJSONObject("metadata").getString("id");
+            JSONObject existing = index(upload.root).getJSONObject("tracks").optJSONObject(identifier);
+            if (existing != null) { if (!identifier.equals(existing.getJSONObject("metadata").getString("id")) || !identifier.equals(existing.getJSONObject("audio").getString("sha256"))) throw new Exception("现有歌曲标识或指纹已改变，原库保留"); media(upload.root, existing, "audio"); if (existing.has("cover")) media(upload.root, existing, "cover"); upload.original = new JSONObject(existing.toString()); }
+            upload.metadata = existing == null ? metadata(source.getJSONObject("metadata")) : SourceDownloadRules.supplement(existing.getJSONObject("metadata"), source.getJSONObject("metadata"));
+            if (existing == null) { upload.metadata.put("favorite", source.getJSONObject("metadata").optBoolean("favorite")); upload.metadata.put("addedAt", System.currentTimeMillis()); }
+            upload.record = existing == null ? new JSONObject().put("metadata", upload.metadata) : new JSONObject(existing.toString()).put("metadata", upload.metadata);
+            upload.directory = upload.root.folder("歌曲").folder(identifier); String token = UUID.randomUUID().toString(); uploads.put(token, upload);
+            try {
+                String base = LibraryPaths.safeName(upload.metadata.getString("artist") + " - " + upload.metadata.getString("title"));
+                for (String kind : new String[] { "audio", "cover" }) {
+                    if (upload.record.has(kind) || !source.has(kind)) continue;
+                    JSONObject file = descriptor(source.getJSONObject(kind)); String format = upload.metadata.optString("format", "mp3"); if (!format.matches("[a-zA-Z0-9]{2,5}")) format = "mp3";
+                    String extension = kind.equals("audio") ? format : file.getString("type").equals("image/png") ? "png" : file.getString("type").equals("image/webp") ? "webp" : "jpg";
+                    String filename = (kind.equals("audio") ? base : "cover") + "-" + token + "." + extension;
+                    upload.directory.create(filename, "application/octet-stream"); file.put("file", filename); upload.record.put(kind, file); upload.offsets.put(kind, 0L);
+                }
+                return token;
+            } catch (Exception error) { cancelSourceValue(token); throw error; }
+        });
+    }
+    boolean needsSourceMedia(String token, String kind) throws Exception { return nativeOperation(() -> { Upload upload = uploads.get(token); if (upload == null || upload.source == null) throw new Exception("下载写入任务已失效"); return upload.offsets.containsKey(kind); }); }
+    void writeSourceDownload(String scope, String token, String kind, long offset, byte[] bytes) throws Exception {
+        nativeOperation(() -> {
+            Upload upload = uploads.get(token);
+            if (upload == null || upload.source == null || !scope.equals(upload.scope) || !config().optString("uri").equals(upload.root.uri.toString()) || !upload.offsets.containsKey(kind) || bytes.length > 1024 * 1024 || offset != upload.offsets.get(kind) || offset + bytes.length > upload.record.getJSONObject(kind).getLong("size")) throw new Exception("下载分块位置或音乐库已变化");
+            upload.directory.required(upload.record.getJSONObject(kind).getString("file")).write(offset, bytes); upload.offsets.put(kind, offset + bytes.length); return null;
+        });
+    }
+    void finishSourceDownload(String scope, String token, JSONObject hashes) throws Exception {
+        nativeOperation(() -> {
+            sourceRoot(scope); Upload upload = uploads.get(token); if (upload == null || upload.source == null || !scope.equals(upload.scope) || !config().optString("uri").equals(upload.root.uri.toString())) throw new Exception("下载写入任务或音乐库已变化");
+            for (String kind : upload.offsets.keySet()) {
+                JSONObject file = upload.record.getJSONObject(kind); LibraryDocuments.Node node = upload.directory.required(file.getString("file")); String hash = hashes.getString(kind);
+                if (!hash.equals(upload.source.getJSONObject(kind).getString("sha256")) || upload.offsets.get(kind) != file.getLong("size") || node.size != file.getLong("size") || !node.digest().equals(hash)) throw new Exception("下载文件不完整或校验失败，原库保留");
+                file.put("sha256", hash);
+            }
+            JSONObject index = index(upload.root); String identifier = upload.metadata.getString("id"); JSONObject latest = index.getJSONObject("tracks").optJSONObject(identifier);
+            if (upload.original == null && latest != null || upload.original != null && (latest == null || !latest.getJSONObject("audio").toString().equals(upload.original.getJSONObject("audio").toString()))) throw new Exception("下载期间本地音频已改变，请刷新后重试，未覆盖现有歌曲");
+            JSONObject record = latest == null ? new JSONObject(upload.record.toString()) : new JSONObject(latest.toString());
+            if (latest != null) {
+                upload.metadata = SourceDownloadRules.supplement(latest.getJSONObject("metadata"), upload.source.getJSONObject("metadata")); record.put("metadata", upload.metadata);
+                for (String kind : upload.offsets.keySet()) if (!record.has(kind)) record.put(kind, upload.record.getJSONObject(kind));
+            }
+            lyrics(upload.directory, upload.metadata, record.getJSONObject("audio").getString("file")); index.getJSONObject("tracks").put(identifier, record); documents.atomicText(upload.root, "library.json", index.toString(2));
+            for (String kind : upload.offsets.keySet()) if (!record.getJSONObject(kind).getString("file").equals(upload.record.getJSONObject(kind).getString("file"))) { try { upload.directory.required(upload.record.getJSONObject(kind).getString("file")).delete(); } catch (Exception ignored) {} }
+            uploads.remove(token); return null;
+        });
+    }
+    private void cancelSourceValue(String token) {
+        Upload upload = uploads.remove(token);
+        if (upload != null) for (String kind : upload.offsets.keySet()) { try { upload.directory.required(upload.record.getJSONObject(kind).getString("file")).delete(); } catch (Exception ignored) {} }
+    }
+    void cancelSourceDownload(String token) throws Exception { nativeOperation(() -> { cancelSourceValue(token); return null; }); }
     private void run(PluginCall call, Operation operation) {
         worker.execute(() -> { try { documents.reset(); call.resolve(operation.run()); } catch (Exception error) { call.reject(error.getMessage() == null ? "音乐库操作失败，原曲库未删除" : error.getMessage()); } });
     }

@@ -63,10 +63,11 @@ public class BackgroundTaskService extends Service {
         BackgroundTaskService service = instance;
         if (service != null) service.handler.post(() -> { service.tasks.remove(identifier); if (service.tasks.isEmpty()) service.stopSelf(); else service.refresh(); });
     }
-    private void pause(String reason) { BackgroundTasksPlugin.control("pause", reason); tasks.clear(); stopSelf(); }
+    private void pause(String reason) { NativeSourceDownloads.pauseAll(); BackgroundTasksPlugin.control("pause", reason); tasks.clear(); stopSelf(); }
     @Override public void onTimeout(int startId, int foregroundServiceType) { pause("系统后台数据处理时限已到，已暂停；请回到前台后继续，不会自动重发付费 AI 请求。"); }
     @Override public void onTaskRemoved(Intent rootIntent) { pause("应用已从最近任务移除，进度保留；重新打开后手动继续。"); }
     @Override public void onDestroy() {
+        NativeSourceDownloads.pauseAll();
         handler.removeCallbacksAndMessages(null);
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         stopForeground(STOP_FOREGROUND_REMOVE); if (instance == this) instance = null; super.onDestroy();

@@ -32,7 +32,7 @@ async function main() {
         NativePlayback: ['state', 'control', 'addListener', 'removeListener'],
         SecureConfig: ['loadKey'],
         AppUpdates: ['config', 'state', 'addListener', 'removeListener'],
-        BackgroundTasks: ['begin', 'update', 'finish', 'addListener', 'removeListener'],
+        BackgroundTasks: ['begin', 'update', 'finish', 'sourceTasks', 'addListener', 'removeListener'],
       };
       const count = (key) => localStorage.setItem(`mock-${key}`, String(Number(localStorage.getItem(`mock-${key}`) || 0) + 1));
       window.Capacitor = {

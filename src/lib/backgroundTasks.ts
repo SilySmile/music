@@ -1,17 +1,12 @@
 import { useSyncExternalStore } from 'react';
-import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
+import { Capacitor, type PluginListenerHandle } from '@capacitor/core';
+import { nativeSourceDownloads } from './nativeSourceDownloads';
+import type { SourceTransferTask } from './transferTypes';
 
 export type TaskView = 'settings' | 'import' | 'export' | 'online' | 'lyrics' | 'lyric-settings' | 'transfers';
 export type BackgroundStatus = 'running' | 'paused' | 'failed' | 'completed' | 'review';
 export type BackgroundTask = { id: string; title: string; message: string; status: BackgroundStatus; view: TaskView; updatedAt: number; persistent?: boolean };
-interface NativeTasks {
-  begin(options: { id: string; title: string }): Promise<void>;
-  update(options: { id: string; message: string }): Promise<void>;
-  finish(options: { id: string }): Promise<void>;
-  openPowerSettings(): Promise<void>;
-  addListener(event: 'control', listener: (event: { action: string; reason?: string }) => void): Promise<PluginListenerHandle>;
-}
-const native = registerPlugin<NativeTasks>('BackgroundTasks');
+const native = nativeSourceDownloads;
 const entries = new Map<string, BackgroundTask>();
 const active = new Map<string, AbortController>();
 const listeners = new Set<() => void>();
@@ -24,7 +19,7 @@ const journalKey = 'xianqiji-background-tasks-v1';
 
 function publish(durable = true) {
   while (entries.size > 60) {
-    const removable = [...entries.values()].find((task) => task.status !== 'review' && !active.has(task.id));
+    const removable = [...entries.values()].find((task) => task.status !== 'running' && task.status !== 'review' && !active.has(task.id));
     if (!removable) break;
     entries.delete(removable.id);
   }
@@ -54,10 +49,17 @@ export function androidBackgroundAvailable() { return Capacitor.getPlatform() !=
 export function resumeBackgroundTasks() { nativePaused = false; if (typeof window !== 'undefined') window.dispatchEvent(new Event('xianqiji-background-resume')); }
 export function pauseBackgroundTasks(reason = '已暂停后台任务。') {
   nativePaused = true;
+  if (Capacitor.getPlatform() === 'android') for (const task of entries.values()) if (task.status === 'running') void nativeSourceDownloads.pauseSource({ id: task.id }).catch(() => {});
   for (const controller of active.values()) controller.abort(new DOMException(reason, 'AbortError'));
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('xianqiji-background-paused', { detail: reason }));
 }
-export function pauseBackgroundTask(id: string) { active.get(id)?.abort(); }
+export function pauseBackgroundTask(id: string) { active.get(id)?.abort(); if (Capacitor.getPlatform() === 'android') void nativeSourceDownloads.pauseSource({ id }).catch(() => {}); }
+export function syncNativeBackgroundTask(task: SourceTransferTask) {
+  if (active.has(task.id)) return;
+  const previous = entries.get(task.id); const message = task.progress || task.error || `已保存 ${task.completed.length} / ${task.ids.length} 首到当前音乐库`;
+  if (previous?.status === task.status && previous.message === message) return;
+  entries.set(task.id, { id: task.id, title: task.label, view: 'settings', persistent: true, status: task.status, message, updatedAt: task.updatedAt }); publish();
+}
 export function dismissBackgroundTask(id: string) { if (!active.has(id)) { entries.delete(id); publish(); } }
 export function completeBackgroundTask(id: string, message: string) { const task = entries.get(id); if (task && !active.has(id)) { entries.set(id, { ...task, status: 'completed', message, updatedAt: Date.now() }); publish(); } }
 

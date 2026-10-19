@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openDB } from 'idb';
 import { createHash } from 'node:crypto';
 import type { Track } from '../types';
-const plugin = vi.hoisted(() => ({ info: vi.fn(), create: vi.fn(), activate: vi.fn(), list: vi.fn(), begin: vi.fn(), write: vi.fn(), finish: vi.fn(), cancel: vi.fn(), cache: vi.fn(), read: vi.fn(), patch: vi.fn() }));
+const plugin = vi.hoisted(() => ({ info: vi.fn(), create: vi.fn(), activate: vi.fn(), list: vi.fn(), begin: vi.fn(), write: vi.fn(), finish: vi.fn(), cancel: vi.fn(), cache: vi.fn(), read: vi.fn(), patch: vi.fn(), sourceTasks: vi.fn(), forgetSource: vi.fn() }));
 vi.mock('@capacitor/core', () => ({ Capacitor: { getPlatform: () => 'android', convertFileSrc: (uri: string) => `https://localhost/_capacitor_content_/${uri.slice('content://'.length)}` }, registerPlugin: () => plugin }));
 const bytes = new Uint8Array([1, 2, 3, 4, 5]);
 const track: Track = { id: createHash('sha256').update(bytes).digest('hex'), title: 'Music', artist: 'Demo', album: '', duration: 1, format: 'wav', audio: new Blob([bytes], { type: 'audio/wav' }), lyrics: [{ time: 0, text: 'Light', translation: '光' }], favorite: true, addedAt: 1 };
@@ -15,6 +15,7 @@ beforeEach(async () => {
   plugin.info.mockResolvedValue({ storageMode: 'database', legacyMigrated: true });
   plugin.begin.mockResolvedValue({ token: 'upload' }); plugin.cache.mockResolvedValue({ entries: [] });
   plugin.cancel.mockResolvedValue({});
+  plugin.sourceTasks.mockResolvedValue({ tasks: [] });
   const database = await openDB('tingyu-library', 3, { upgrade(database) { database.createObjectStore('tracks', { keyPath: 'id' }); database.createObjectStore('translations'); database.createObjectStore('transfers', { keyPath: 'id' }); } }); database.close();
 });
 afterEach(async () => { const database = await openDB('tingyu-library', 3); if (database.objectStoreNames.contains('tracks')) { await database.clear('tracks'); await database.clear('translations'); await database.clear('transfers'); } database.close(); vi.unstubAllGlobals(); });
@@ -96,5 +97,13 @@ describe('Android user-selected music library', () => {
     const restored = await import('./storage');
     const restoredTask = (await restored.getTransfers())[0];
     expect(restoredTask.kind === 'import' && restoredTask.completed).toEqual(['song.wav']);
+  });
+  it('recovers native download checkpoints only for the selected folder and removes records without deleting music', async () => {
+    plugin.info.mockResolvedValue({ storageMode: 'folder', legacyMigrated: true, libraryId: 'chosen-native-folder' });
+    const task = { id: 'native-recovery-task', kind: 'source' as const, direction: 'download' as const, label: '下载', ids: [track.id], completed: [track.id], sourceIdentity: 'a'.repeat(64), scope: 'folder:chosen-native-folder', libraryKey: 'chosen-native-folder', status: 'completed' as const, updatedAt: 123, nativeDownload: true };
+    plugin.sourceTasks.mockResolvedValue({ tasks: [task, { ...task, id: 'foreign-task', scope: 'folder:other', libraryKey: 'other' }] }); plugin.forgetSource.mockResolvedValue(undefined);
+    const storage = await import('./storage');
+    expect((await storage.getTransfers()).map((value) => value.id)).toEqual([task.id]);
+    await storage.deleteTransfer(task.id); expect(plugin.forgetSource).toHaveBeenCalledWith({ id: task.id }); expect(plugin.write).not.toHaveBeenCalled(); expect(plugin.begin).not.toHaveBeenCalled();
   });
 });

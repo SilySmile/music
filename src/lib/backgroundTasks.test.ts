@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-const bridge = vi.hoisted(() => ({ platform: 'web', begin: vi.fn(), finish: vi.fn(), update: vi.fn(), addListener: vi.fn() }));
+const bridge = vi.hoisted(() => ({ platform: 'web', begin: vi.fn(), finish: vi.fn(), update: vi.fn(), addListener: vi.fn(), pauseSource: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('@capacitor/core', () => ({ Capacitor: { getPlatform: () => bridge.platform }, registerPlugin: () => bridge }));
 beforeEach(() => {
   vi.resetModules(); vi.clearAllMocks(); bridge.platform = 'web';

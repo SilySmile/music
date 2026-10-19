@@ -33,6 +33,24 @@ public class BackgroundTasksPlugin extends Plugin {
         JSObject value = new JSObject(); value.put("action", action); value.put("reason", reason);
         plugin.notifyListeners("control", value);
     }
+    static void downloadProgress(org.json.JSONObject task) {
+        BackgroundTasksPlugin plugin = instance;
+        if (plugin != null) { try { plugin.notifyListeners("sourceProgress", new JSObject(task.toString())); } catch (Exception ignored) {} }
+    }
+    @PluginMethod public void downloadSource(PluginCall call) {
+        org.json.JSONObject task = call.getObject("task");
+        if (task == null) { call.reject("下载歌曲清单为空"); return; }
+        NativeSourceDownloads.start(getContext().getApplicationContext(), task, call.getString("baseUrl", ""), call.getString("token", ""), new NativeSourceDownloads.Completion() {
+            @Override public void complete(org.json.JSONObject result) { try { call.resolve(new JSObject(result.toString())); } catch (Exception error) { call.reject("下载状态读取失败，请打开任务中心"); } }
+            @Override public void failed(String message) { call.reject(message); }
+        });
+    }
+    @PluginMethod public void sourceTasks(PluginCall call) {
+        try { JSObject result = new JSObject(); result.put("tasks", NativeSourceDownloads.states(getContext())); call.resolve(result); }
+        catch (Exception error) { call.reject("无法读取原生下载检查点"); }
+    }
+    @PluginMethod public void pauseSource(PluginCall call) { try { NativeSourceDownloads.pause(identifier(call)); call.resolve(); } catch (Exception error) { call.reject(error.getMessage()); } }
+    @PluginMethod public void forgetSource(PluginCall call) { try { NativeSourceDownloads.forget(getContext(), identifier(call)); call.resolve(); } catch (Exception error) { call.reject(error.getMessage()); } }
     private String identifier(PluginCall call) throws Exception {
         String identifier = call.getString("id", "");
         if (!identifier.matches("[a-zA-Z0-9:_-]{1,120}")) throw new Exception("后台任务标识无效");
@@ -70,6 +88,7 @@ public class BackgroundTasksPlugin extends Plugin {
     }
     @Override protected void handleOnResume() { control("foreground", ""); }
     @Override protected void handleOnDestroy() {
+        NativeSourceDownloads.pauseAll();
         if (instance == this) instance = null;
         for (PluginCall call : pending.values()) call.reject("任务页面已结束，请重新打开后继续。");
         pending.clear();

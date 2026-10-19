@@ -4,6 +4,8 @@ import type { StoredTrack, Track } from '../types';
 import type { ImportTask, TransferTask } from './transferTypes';
 import { nativeAudio } from './nativeAudio';
 import { androidLibrary, androidLibraryBridge, isAndroidLibrary } from './androidLibrary';
+import { nativeSourceDownloads, validNativeSourceTask } from './nativeSourceDownloads';
+import { syncNativeBackgroundTask } from './backgroundTasks';
 
 const database = openDB('tingyu-library', 3, {
   upgrade(database) {
@@ -23,6 +25,7 @@ async function ensureBackend() {
   await mobileReady;
 }
 const nativeTracks = new Map<string, Track>();
+export function invalidateLibraryTracks(ids: string[]) { for (const id of ids) nativeTracks.delete(id); }
 const chunkSize = 4 * 1024 * 1024;
 export async function sourceLibraryScope() {
   await ensureBackend();
@@ -204,7 +207,15 @@ export async function getTrack(id: string): Promise<Track | undefined> {
 }
 export async function getTransfers(): Promise<TransferTask[]> {
   await ensureBackend();
-  const tasks = await (await database).getAll('transfers') as TransferTask[];
+  const stored = await database;
+  if (isAndroidLibrary() && mobileBridge) {
+    const states = (await nativeSourceDownloads.sourceTasks()).tasks || [];
+    for (const task of states) {
+      if (!validNativeSourceTask(task) || task.libraryKey !== mobileLibraryKey || task.scope !== `folder:${mobileLibraryKey}`) continue;
+      await stored.put('transfers', task); syncNativeBackgroundTask(task);
+    }
+  }
+  const tasks = await stored.getAll('transfers') as TransferTask[];
   return tasks.filter((task) => !isAndroidLibrary() || (task.libraryKey || 'database') === mobileLibraryKey).sort((first, second) => second.updatedAt - first.updatedAt);
 }
 export async function saveTransfer(task: TransferTask) {
@@ -215,7 +226,11 @@ export async function saveTransfer(task: TransferTask) {
   }
   await (await database).put('transfers', task);
 }
-export async function deleteTransfer(id: string) { await (await database).delete('transfers', id); }
+export async function deleteTransfer(id: string) {
+  await ensureBackend(); const stored = await database; const task = await stored.get('transfers', id) as TransferTask | undefined;
+  if (isAndroidLibrary() && task?.kind === 'source' && task.nativeDownload) await nativeSourceDownloads.forgetSource({ id });
+  await stored.delete('transfers', id);
+}
 
 export async function commitImportedTrack(track: Track | undefined, task: ImportTask, entry: string) {
   await ensureBackend();

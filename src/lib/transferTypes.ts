@@ -40,6 +40,8 @@ export type ExportTask = {
   error?: string;
 };
 export type SourceTransferTask = {
+  nativeDownload?: boolean;
+  progress?: string;
   libraryKey?: string;
   id: string;
   kind: 'source';

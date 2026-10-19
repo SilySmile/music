@@ -37,7 +37,7 @@ export default function TransferCenter({ onClose, onResumeImport, onResumeSource
   const labels = { running: '进行中', paused: '已暂停', failed: '可重试', completed: '已完成', review: '待核对保存' };
   return <div className="modal-backdrop"><section className="modal transfer-center" role="dialog" aria-modal="true" aria-labelledby="transfer-title">
     <div className="modal-heading"><div><span className="eyebrow">WORK IN THE BACKGROUND</span><h2 id="transfer-title">任务中心</h2></div><button className="icon-button" onClick={onClose} aria-label="关闭传输任务"><X size={20} /></button></div>
-    <p className="field-help">关闭窗口继续运行；PC 可隐藏到托盘，安卓已启动任务使用前台服务和常驻通知支持锁屏运行。系统强制停止后需手动继续，付费 AI 不自动重发；AI 时间草稿仍须核对后保存。导入恢复需重新选择同一源包，下载当前未完成歌曲重新校验。</p>
+    <p className="field-help">关闭窗口继续运行；PC 可隐藏到托盘，安卓自选文件曲库的下载 / 补充由原生队列和常驻通知执行；其他任务仍可能受 WebView 与系统后台策略影响。系统强制停止后需手动继续，付费 AI 不自动重发；AI 时间草稿仍须核对后保存。导入恢复需重新选择同一源包，下载当前未完成歌曲重新校验。</p>
     {activities.some((task) => task.status === 'running') && <button className="button outline" onClick={() => pauseBackgroundTasks()}><Pause size={14} />暂停全部任务</button>}
     <button className="button outline" onClick={() => { resumeBackgroundTasks(); setStatus('允许继续已开启的自动任务；中断的传输请逐项继续，付费 AI 仍需手动确认。'); }}>允许继续后台任务</button>
     {isAndroidBackground() && <button className="button outline" onClick={() => void openBackgroundPowerSettings().catch((error) => setStatus(error.message))}>安卓后台运行 / 电池设置</button>}
