@@ -11,6 +11,7 @@ export default function LyricImportDialog({ files, tracks, onSave, onClose, onBu
   const [error, setError] = useState('');
   const [saved, setSaved] = useState<string[]>([]);
   useEffect(() => { onBusy(loading || saving); }, [loading, saving, onBusy]);
+  useEffect(() => () => onBusy(false), [onBusy]);
   useEffect(() => {
     let active = true;
     setLoading(true); setSaved([]); setEntries([]); setError('');

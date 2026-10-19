@@ -28,6 +28,7 @@ export default function OnlineLyricsDialog({ track, aiConfig, onSave, onClose, o
   const [draft, setDraft] = useState(draftRef.current);
   const mountedRef = useRef(true);
   useEffect(() => { onBusy(!!working); }, [working, onBusy]);
+  useEffect(() => () => onBusy(false), [onBusy]);
 
   useEffect(() => {
     mountedRef.current = true;
