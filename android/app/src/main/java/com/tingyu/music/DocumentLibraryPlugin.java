@@ -97,7 +97,9 @@ public class DocumentLibraryPlugin extends Plugin {
             sourceRoot(scope); Upload upload = uploads.get(token); if (upload == null || upload.source == null || !scope.equals(upload.scope) || !config().optString("uri").equals(upload.root.uri.toString())) throw new Exception("下载写入任务或音乐库已变化");
             for (String kind : upload.offsets.keySet()) {
                 JSONObject file = upload.record.getJSONObject(kind); LibraryDocuments.Node node = upload.directory.required(file.getString("file")); String hash = hashes.getString(kind);
-                if (!hash.equals(upload.source.getJSONObject(kind).getString("sha256")) || upload.offsets.get(kind) != file.getLong("size") || node.size != file.getLong("size") || !node.digest().equals(hash)) throw new Exception("下载文件不完整或校验失败，原库保留");
+                // The native worker already hashed every received chunk against the server digest; reading
+                // the whole file back through SAF again doubled the I/O without adding information.
+                if (!hash.equals(upload.source.getJSONObject(kind).getString("sha256")) || upload.offsets.get(kind) != file.getLong("size") || node.size != file.getLong("size")) throw new Exception("下载文件不完整或校验失败，原库保留");
                 file.put("sha256", hash);
             }
             JSONObject index = index(upload.root); String identifier = upload.metadata.getString("id"); JSONObject latest = index.getJSONObject("tracks").optJSONObject(identifier);
@@ -107,7 +109,11 @@ public class DocumentLibraryPlugin extends Plugin {
                 upload.metadata = SourceDownloadRules.supplement(latest.getJSONObject("metadata"), upload.source.getJSONObject("metadata")); record.put("metadata", upload.metadata);
                 for (String kind : upload.offsets.keySet()) if (!record.has(kind)) record.put(kind, upload.record.getJSONObject(kind));
             }
-            lyrics(upload.directory, upload.metadata, record.getJSONObject("audio").getString("file")); index.getJSONObject("tracks").put(identifier, record); documents.atomicText(upload.root, "library.json", index.toString(2));
+            // A song that was already complete stays untouched: rewriting library.json and its lyric
+            // files for every song made a full "supplement" pass take minutes without changing anything.
+            if (latest == null || !record.toString().equals(latest.toString())) {
+                lyrics(upload.directory, upload.metadata, record.getJSONObject("audio").getString("file")); index.getJSONObject("tracks").put(identifier, record); saveIndex(upload.root, index);
+            }
             for (String kind : upload.offsets.keySet()) if (!record.getJSONObject(kind).getString("file").equals(upload.record.getJSONObject(kind).getString("file"))) { try { upload.directory.required(upload.record.getJSONObject(kind).getString("file")).delete(); } catch (Exception ignored) {} }
             uploads.remove(token); return null;
         });
@@ -118,6 +124,7 @@ public class DocumentLibraryPlugin extends Plugin {
     }
     void cancelSourceDownload(String token) throws Exception { nativeOperation(() -> { cancelSourceValue(token); return null; }); }
     private void run(PluginCall call, Operation operation) {
+        cachedIndex = null; cachedIndexUri = null;
         worker.execute(() -> { try { documents.reset(); call.resolve(operation.run()); } catch (Exception error) { call.reject(error.getMessage() == null ? "音乐库操作失败，原曲库未删除" : error.getMessage()); } });
     }
     private JSObject result(JSONObject value) throws Exception { return new JSObject(value.toString()); }
@@ -144,12 +151,22 @@ public class DocumentLibraryPlugin extends Plugin {
         if (location.isEmpty()) throw new Exception("当前使用内部数据库，请先选择音乐库文件夹");
         return documents.inspect(Uri.parse(location));
     }
+    private String cachedIndexUri;
+    private JSONObject cachedIndex;
     private JSONObject index(LibraryDocuments.Node root) throws Exception {
+        String location = root.uri.toString();
+        // Parsing a large library.json once per song made batch downloads quadratic; the cache is
+        // dropped at every JavaScript call and refreshed by saveIndex, so it never outlives a change.
+        if (cachedIndex != null && location.equals(cachedIndexUri)) return cachedIndex;
         String text = documents.readIndex(root, "library.json");
         if (text == null) throw new Exception("未找到 library.json，请选择完整音乐库；普通歌曲文件夹请先导入");
         JSONObject index = new JSONObject(text);
         if (!"xianqiji-library-folder".equals(index.optString("format")) || index.optInt("version") != 1 || index.optString("libraryId").isEmpty() || !(index.opt("tracks") instanceof JSONObject)) throw new Exception("不支持或已损坏的曲库清单，未覆盖文件");
-        return index;
+        cachedIndex = index; cachedIndexUri = location; return index;
+    }
+    private void saveIndex(LibraryDocuments.Node root, JSONObject index) throws Exception {
+        documents.atomicText(root, "library.json", index.toString(2));
+        cachedIndex = index; cachedIndexUri = root.uri.toString();
     }
     private JSONObject cache(LibraryDocuments.Node root) throws Exception {
         String text = documents.readIndex(root, "translations-cache.json");
@@ -290,7 +307,7 @@ public class DocumentLibraryPlugin extends Plugin {
                 if (expected == null || expected.length() != tracks.length()) throw new Exception("复制歌曲数不完整，未切换");
                 java.util.Set<String> identifiers = new java.util.HashSet<>();
                 for (int position = 0; position < expected.length(); position++) { String id = LibraryPaths.id(expected.getString(position)); if (!identifiers.add(id) || !tracks.has(id)) throw new Exception("复制歌曲清单不一致，未切换"); }
-                index.remove("copyIncomplete"); documents.atomicText(selected, "library.json", index.toString(2));
+                index.remove("copyIncomplete"); saveIndex(selected, index);
             }
             String probe = ".xianqiji-write-check-" + UUID.randomUUID(); LibraryDocuments.Node test = selected.create(probe, "application/octet-stream");
             try { test.writeText("verify"); test = test.rename(probe + "-renamed"); } finally { try { test.delete(); } catch (Exception ignored) {} }
@@ -311,7 +328,7 @@ public class DocumentLibraryPlugin extends Plugin {
                 if (!audio.optString("uri").startsWith("content://")) { audio.put("uri", media(root, record, "audio").uri.toString()); changed = true; }
                 values.put(record);
             }
-            if (changed) documents.atomicText(root, "library.json", index.toString(2));
+            if (changed) saveIndex(root, index);
             JSObject value = new JSObject(); value.put("tracks", values); return value;
         });
     }
@@ -371,7 +388,7 @@ public class DocumentLibraryPlugin extends Plugin {
             }
             lyrics(upload.directory, upload.metadata, upload.record.getJSONObject("audio").getString("file"));
             JSONObject index = index(upload.root); index.getJSONObject("tracks").put(upload.metadata.getString("id"), upload.record);
-            documents.atomicText(upload.root, "library.json", index.toString(2)); uploads.remove(token); return result(upload.record);
+            saveIndex(upload.root, index); uploads.remove(token); return result(upload.record);
         });
     }
     @PluginMethod public void cancel(PluginCall call) {
@@ -395,11 +412,11 @@ public class DocumentLibraryPlugin extends Plugin {
             JSONObject value = new JSONObject(record.getJSONObject("metadata").toString()); JSONObject patch = call.getObject("patch"); if (patch == null) throw new Exception("歌曲修改信息为空");
             Iterator<String> keys = patch.keys(); while (keys.hasNext()) { String key = keys.next(); if (!key.equals("id") && !key.equals("audio") && !key.equals("cover")) value.put(key, patch.get(key)); }
             value = metadata(value); lyrics(root.required("歌曲").required(id), value, record.getJSONObject("audio").getString("file")); record.put("metadata", value);
-            documents.atomicText(root, "library.json", index.toString(2)); return result(record);
+            saveIndex(root, index); return result(record);
         });
     }
     @PluginMethod public void remove(PluginCall call) {
-        run(call, () -> { LibraryDocuments.Node root = root(null); JSONObject index = index(root); index.getJSONObject("tracks").remove(LibraryPaths.id(call.getString("id"))); documents.atomicText(root, "library.json", index.toString(2)); return new JSObject(); });
+        run(call, () -> { LibraryDocuments.Node root = root(null); JSONObject index = index(root); index.getJSONObject("tracks").remove(LibraryPaths.id(call.getString("id"))); saveIndex(root, index); return new JSObject(); });
     }
     @PluginMethod public void cache(PluginCall call) {
         run(call, () -> {

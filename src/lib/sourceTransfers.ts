@@ -9,12 +9,30 @@ import { nativeSourceDownloads, nativeSourceEnabled, validNativeSourceTask } fro
 export function sourceIdentity(config: SourceConfig) {
   return Array.from(sha256(new TextEncoder().encode(`${normalizeSourceUrl(config.baseUrl)}|${config.token}`)), (value) => value.toString(16).padStart(2, '0')).join('');
 }
+/** A cloud song only needs "download / supplement" when this device cannot yet play or show it fully. */
+export function needsSourceSupplement(local: Track | undefined, remote: { metadata: { lyrics: Track['lyrics'] }; cover?: unknown }) {
+  if (!local) return true;
+  if (remote.cover && !local.cover) return true;
+  if (remote.metadata.lyrics.length && !local.lyrics.length) return true;
+  if (remote.metadata.lyrics.some((line) => line.translation) && !local.lyrics.some((line) => line.translation)) return true;
+  return false;
+}
 export async function createSourceTransfer(direction: SourceTransferTask['direction'], ids: string[], config: SourceConfig): Promise<SourceTransferTask> {
   if (!ids.length) throw new Error('请先选择歌曲。');
   const task: SourceTransferTask = { id: crypto.randomUUID(), kind: 'source', direction, label: `${direction === 'upload' ? '上传到线上' : '下载 / 补充到本地'} · ${new Set(ids).size} 首`, sourceIdentity: sourceIdentity(config), scope: await sourceLibraryScope(), ids: [...new Set(ids)], completed: [], status: 'paused', updatedAt: Date.now() };
   await saveTransfer(task); return task;
 }
+export function sourceTransferLimit(direction: SourceTransferTask['direction']) { return direction === 'download' ? 2 : 1; }
+const running: Record<SourceTransferTask['direction'], number> = { upload: 0, download: 0 };
+export function sourceTransfersRunning(direction: SourceTransferTask['direction']) { return running[direction]; }
 export async function runSourceTransfer(task: SourceTransferTask, signal: AbortSignal, onProgress: (message: string) => void, onSaved: (track: Track) => Promise<void> = async () => {}) {
+  const limit = sourceTransferLimit(task.direction);
+  if (running[task.direction] >= limit) throw new Error(`已有 ${limit} 个${task.direction === 'upload' ? '上传' : '下载'}任务在运行，请等待其中一个完成后再继续。`);
+  running[task.direction] += 1;
+  try { return await runSourceTransferNow(task, signal, onProgress, onSaved); }
+  finally { running[task.direction] -= 1; }
+}
+async function runSourceTransferNow(task: SourceTransferTask, signal: AbortSignal, onProgress: (message: string) => void, onSaved: (track: Track) => Promise<void>) {
   const job = await beginBackgroundTask({ id: task.id, title: task.label, view: 'settings', signal, persistent: true });
   const progress = (message: string) => { job.progress(message); onProgress(message); };
   task.status = 'running'; task.error = undefined;

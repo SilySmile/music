@@ -21,7 +21,7 @@ import org.json.JSONObject;
 
 final class NativeSourceDownloads {
     interface Completion { void complete(JSONObject task); void failed(String message); }
-    private static final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private static final ExecutorService worker = Executors.newFixedThreadPool(2);
     private static final ConcurrentHashMap<String, Operation> active = new ConcurrentHashMap<>();
     private static final Object journalLock = new Object();
     private static final class Operation implements SourceDownloadWorker.Control {

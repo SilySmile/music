@@ -3,7 +3,7 @@ import { Check, Cloud, Download, LoaderCircle, RefreshCw, Upload } from 'lucide-
 import type { Track } from '../types';
 import { listSource, loadSourceConfig, normalizeSourceUrl, parseSourceConnection, saveSourceConfig, sourceRequest, type SourceConfig, type SourceInfo, type SourceTrack } from '../lib/onlineSource';
 import type { SourceAutoController } from '../lib/useSourceAutoSync';
-import { createSourceTransfer, runSourceTransfer } from '../lib/sourceTransfers';
+import { createSourceTransfer, needsSourceSupplement, runSourceTransfer, sourceTransferLimit, sourceTransfersRunning } from '../lib/sourceTransfers';
 import type { SourceTransferTask } from '../lib/transferTypes';
 import { beginBackgroundTask, type BackgroundHandle } from '../lib/backgroundTasks';
 
@@ -63,23 +63,35 @@ export default function OnlineSourceSettings({ tracks, blocked, auto, onChanged,
     } catch (error) { progress(error instanceof Error ? error.message : '连接失败，请核对地址、密钥与服务器状态。'); }
     finally { await job?.finish(controller.current.signal.aborted ? 'paused' : connected ? 'completed' : 'failed', connected ? '连接成功，云端歌曲已加入全部歌曲。' : '连接未完成，请核对地址、权限和网络。'); lock.current = false; if (mounted.current) setWorking(false); }
   }
+  function supplementNeeded(id: string) {
+    const local = tracks.find((track) => track.id === id && !track.cloud);
+    const record = remote.find((item) => item.metadata.id === id);
+    return needsSourceSupplement(local, record ?? { metadata: { lyrics: [] } });
+  }
   async function transfer(resume?: SourceTransferTask) {
     if (!resume && !confirmation || lock.current) return; lock.current = true;
-    const action = resume?.direction || confirmation!; const ids = [...currentSelection];
+    const action = resume?.direction || confirmation!; const chosen = [...currentSelection];
     setWorking(true); setConfirmation(null); controller.current = new AbortController();
-    window.dispatchEvent(new CustomEvent('xianqiji-source-transferring', { detail: true }));
     try {
       await auto.pause();
       const saved = await loadSourceConfig();
       if (!resume && (normalizeSourceUrl(saved.baseUrl) !== normalizeSourceUrl(config.baseUrl) || saved.token !== config.token || dirty)) throw new Error('配置已改变，请先重新连接后确认。');
+      if (!resume && action === 'download' && sourceTransfersRunning('download') >= sourceTransferLimit('download')) throw new Error('已有 2 个下载 / 补充任务在运行，请等待其中一个完成，或在任务中心暂停其中一个。');
+      const ids = resume ? chosen : action === 'download' ? chosen.filter(supplementNeeded) : chosen;
+      if (!resume && !ids.length) { progress('所选歌曲在本地都已完整（音频、封面、中文歌词），没有需要补充的内容。'); return; }
+      if (!resume && action === 'download' && ids.length < chosen.length) progress(`已跳过 ${chosen.length - ids.length} 首本地已完整的歌曲，本次补充 ${ids.length} 首。`);
       const task = resume || await createSourceTransfer(action, ids, saved);
-      const result = await runSourceTransfer(task, controller.current.signal, progress, async (track) => { onSaved?.(track); });
-      if (result.status === 'completed') {
-        const list = await listSource();
-        if (mounted.current) { setRemote(list); setSelected([]); }
-      }
+      const signal = controller.current.signal;
+      window.dispatchEvent(new CustomEvent('xianqiji-source-transferring', { detail: true }));
+      // The task keeps running in the background so a second download can be started right away;
+      // the upper limit inside runSourceTransfer still rejects a third one.
+      void runSourceTransfer(task, signal, progress, async (track) => { onSaved?.(track); })
+        .then(async (result) => { if (result.status === 'completed') { const list = await listSource(); if (mounted.current) { setRemote(list); setSelected([]); } } })
+        .catch((error) => progress(error instanceof Error ? error.message : '任务未启动，请检查任务中心或稍后重试。'))
+        .finally(async () => { await onChanged().catch(() => {}); const active = sourceTransfersRunning('download') + sourceTransfersRunning('upload') > 0; window.dispatchEvent(new CustomEvent('xianqiji-source-transferring', { detail: active })); });
+      progress(`${action === 'upload' ? '上传' : '下载 / 补充'}任务已开始，可在「传输任务」查看进度；下载最多可同时进行 2 个。`);
     } catch (error) { progress(error instanceof Error ? error.message : '任务未启动，请检查任务中心或稍后重试。'); }
-    finally { await onChanged().catch(() => {}); lock.current = false; window.dispatchEvent(new CustomEvent('xianqiji-source-transferring', { detail: false })); if (mounted.current) setWorking(false); }
+    finally { lock.current = false; if (mounted.current) setWorking(false); }
   }
   return <section className="online-source-settings"><h3><Cloud size={16} />云端音乐</h3>
     <p className="field-help">填写服务器地址即可听歌，上传密钥可以留空。连接后云端歌曲直接显示在“全部歌曲”，点播哪首就缓存哪首到当前本地音乐库，包含音频、封面和歌词；不会预先下载整库。</p>
