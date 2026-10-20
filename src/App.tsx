@@ -186,22 +186,28 @@ export default function App() {
     return () => { window.removeEventListener('tingyu-library-switching', switching); window.removeEventListener('xianqiji-source-transferring', sourceTransfer); };
   }, []);
   useEffect(() => {
-    // Connecting to the cloud library now marks every incomplete song and starts one automatic
-    // supplement task, so a full manual pass over the whole catalogue is no longer required.
+    // Connecting to the cloud library marks local songs that are missing a cover or Chinese
+    // lyrics and supplements just those. Songs that were never downloaded stay cloud-only: the
+    // player still never predownloads unheard audio.
     const catalog = (event: Event) => {
       const detail = (event as CustomEvent<{ config: SourceConfig; records: SourceTrack[] }>).detail;
       if (!detail?.records?.length) return;
       const local = tracksRef.current;
-      const needs = detail.records.filter((record) => needsSourceSupplement(local.find((track) => track.id === record.metadata.id && !track.cloud), record)).map((record) => record.metadata.id);
+      const needs = detail.records.filter((record) => {
+        const owned = local.find((track) => track.id === record.metadata.id && !track.cloud);
+        return Boolean(owned) && needsSourceSupplement(owned, record);
+      }).map((record) => record.metadata.id);
       setNeedSupplement(new Set(needs));
       try { localStorage.setItem('xianqiji-need-supplement', JSON.stringify(needs)); } catch {}
       if (!needs.length) return;
       void (async () => {
         try {
-          if (sourceTransfersRunning('download') >= sourceTransferLimit('download')) { notify(`有 ${needs.length} 首云端歌曲待补充，已有两个下载任务在运行，稍后可在任务中心或云端音乐中继续。`); return; }
+          if (sourceTransfersRunning('download') >= sourceTransferLimit('download')) { notify(`有 ${needs.length} 首本地歌曲待补充，已有两个下载任务在运行，稍后可在任务中心或云端音乐中继续。`); return; }
           const task = await createSourceTransfer('download', needs, await loadSourceConfig());
-          void runSourceTransfer(task, new AbortController().signal, () => {}, async () => {});
-          notify(`已自动开始补充 ${needs.length} 首云端歌曲，可在「传输任务」查看进度或暂停。`);
+          void runSourceTransfer(task, new AbortController().signal, () => {}, async () => {}).then(() => {
+            setNeedSupplement((previous) => { const next = new Set(previous); for (const id of needs) next.delete(id); try { localStorage.setItem('xianqiji-need-supplement', JSON.stringify([...next])); } catch {} return next; });
+          }).catch(() => {});
+          notify(`已自动开始补充 ${needs.length} 首本地缺失的封面或中文，可在「传输任务」查看进度或暂停。`);
         } catch (error) { notify(error instanceof Error ? error.message : '自动补充未能启动，可在云端音乐中手动补充。'); }
       })();
     };
