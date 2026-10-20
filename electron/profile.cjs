@@ -42,10 +42,14 @@ function migrateProfile(source, target) {
   if (fs.existsSync(target) && fs.readdirSync(target).length) throw new Error('目标数据目录非空，拒绝覆盖。');
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const backup = fs.mkdtempSync(path.join(path.dirname(target), '旧C盘数据备份-'));
+  // Newer Node versions refuse cpSync into a directory that already exists when errorOnExist is
+  // set, so the reserved (still empty) paths are removed first. Non-empty targets stay rejected.
+  fs.rmdirSync(backup);
   const files = inventory(source);
   fs.cpSync(source, backup, { recursive: true, errorOnExist: true, force: false });
   verify(backup, files);
   verify(source, files);
+  if (fs.existsSync(target)) fs.rmdirSync(target);
   fs.cpSync(backup, target, { recursive: true, errorOnExist: true, force: false });
   verify(target, files);
   const rebase = (value, destination) => typeof value === 'string' && path.isAbsolute(value) && inside(source, value) ? path.join(destination, path.relative(source, value)) : value;
