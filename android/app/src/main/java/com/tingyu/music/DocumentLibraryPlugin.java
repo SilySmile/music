@@ -78,7 +78,7 @@ public class DocumentLibraryPlugin extends Plugin {
                     JSONObject file = descriptor(source.getJSONObject(kind)); String format = upload.metadata.optString("format", "mp3"); if (!format.matches("[a-zA-Z0-9]{2,5}")) format = "mp3";
                     String extension = kind.equals("audio") ? format : file.getString("type").equals("image/png") ? "png" : file.getString("type").equals("image/webp") ? "webp" : "jpg";
                     String filename = (kind.equals("audio") ? base : "cover") + "-" + token + "." + extension;
-                    upload.directory.create(filename, "application/octet-stream"); file.put("file", filename); upload.record.put(kind, file); upload.offsets.put(kind, 0L);
+                    LibraryDocuments.Node created = upload.directory.create(filename, "application/octet-stream"); file.put("file", filename); if (kind.equals("audio")) file.put("uri", created.uri.toString()); upload.record.put(kind, file); upload.offsets.put(kind, 0L);
                 }
                 return token;
             } catch (Exception error) { cancelSourceValue(token); throw error; }
@@ -178,7 +178,12 @@ public class DocumentLibraryPlugin extends Plugin {
         JSONObject file = record.getJSONObject(kind); descriptor(file);
         LibraryPaths.filename(file.getString("file"));
         if (!file.getString("sha256").matches("[a-f0-9]{64}")) throw new Exception("文件校验值无效");
-        LibraryDocuments.Node node = root.required("歌曲").required(id).required(file.getString("file"));
+        LibraryDocuments.Node node = null; String stored = file.optString("uri");
+        if (stored.startsWith("content://")) {
+            try { node = documents.inspect(Uri.parse(stored)); } catch (Exception ignored) { node = null; }
+            if (node != null && (node.directory || !node.name.equals(file.getString("file")))) node = null;
+        }
+        if (node == null) node = root.required("歌曲").required(id).required(file.getString("file"));
         if (node.directory || node.size != file.getLong("size")) throw new Exception("歌曲文件缺失或大小不符：" + record.getJSONObject("metadata").getString("title"));
         return node;
     }
@@ -194,12 +199,17 @@ public class DocumentLibraryPlugin extends Plugin {
         while (keys.hasNext()) {
             String id = LibraryPaths.id(keys.next()); JSONObject record = tracks.getJSONObject(id);
             if (!id.equals(metadata(record.getJSONObject("metadata")).getString("id"))) throw new Exception("歌曲标识与索引不符");
-            for (String kind : new String[] { "audio", "cover" }) if (kind.equals("audio") || record.has(kind)) {
-                LibraryDocuments.Node file = media(root, record, kind);
-                if (hashes && !file.digest().equals(record.getJSONObject(kind).getString("sha256"))) throw new Exception("文件 SHA-256 校验失败：" + file.name);
-                if (kind.equals("audio") && id.matches("[a-f0-9]{64}") && !id.equals(record.getJSONObject(kind).getString("sha256"))) throw new Exception("歌曲指纹不符");
+            JSONObject audio = record.getJSONObject("audio");
+            if (id.matches("[a-f0-9]{64}") && !id.equals(audio.getString("sha256"))) throw new Exception("歌曲指纹不符");
+            // Resolving every audio / cover through SAF costs a cursor query per song. Listing the
+            // library now trusts the index and only re-reads hashes when a full verification is asked for.
+            if (hashes) {
+                for (String kind : new String[] { "audio", "cover" }) if (kind.equals("audio") || record.has(kind)) {
+                    LibraryDocuments.Node file = media(root, record, kind);
+                    if (!file.digest().equals(record.getJSONObject(kind).getString("sha256"))) throw new Exception("文件 SHA-256 校验失败：" + file.name);
+                }
+                progress("校验已有音乐库", ++completed, tracks.length());
             }
-            if (hashes) progress("校验已有音乐库", ++completed, tracks.length());
         }
         if (!before.equals(documents.readIndex(root, "library.json")) || !java.util.Objects.equals(cacheBefore, documents.readIndex(root, "translations-cache.json"))) throw new Exception("核验期间曲库被其他软件修改，请重试");
         return index;
@@ -291,9 +301,17 @@ public class DocumentLibraryPlugin extends Plugin {
     }
     @PluginMethod public void list(PluginCall call) {
         run(call, () -> {
-            LibraryDocuments.Node root = root(call.getString("target")); JSONObject tracks = verify(root, false).getJSONObject("tracks"); JSArray values = new JSArray();
+            LibraryDocuments.Node root = root(call.getString("target"));
+            JSONObject index = verify(root, false); JSONObject tracks = index.getJSONObject("tracks"); JSArray values = new JSArray(); boolean changed = false;
             Iterator<String> keys = tracks.keys();
-            while (keys.hasNext()) { JSONObject record = tracks.getJSONObject(keys.next()); record.getJSONObject("audio").put("uri", media(root, record, "audio").uri.toString()); values.put(record); }
+            while (keys.hasNext()) {
+                JSONObject record = tracks.getJSONObject(keys.next()); JSONObject audio = record.getJSONObject("audio");
+                // Older libraries stored no document URI; resolve it once and keep it in the index so
+                // every later start-up reads a single JSON file instead of walking the folder tree.
+                if (!audio.optString("uri").startsWith("content://")) { audio.put("uri", media(root, record, "audio").uri.toString()); changed = true; }
+                values.put(record);
+            }
+            if (changed) documents.atomicText(root, "library.json", index.toString(2));
             JSObject value = new JSObject(); value.put("tracks", values); return value;
         });
     }
@@ -308,7 +326,7 @@ public class DocumentLibraryPlugin extends Plugin {
                 JSONObject provided = call.getObject(kind); if (provided == null && kind.equals("cover")) continue;
                 JSONObject file = descriptor(provided); String extension = kind.equals("audio") ? format : file.getString("type").equals("image/png") ? "png" : "jpg";
                 String filename = (kind.equals("audio") ? base : "cover") + "-" + token + "." + extension;
-                upload.directory.create(filename, "application/octet-stream"); file.put("file", filename); upload.record.put(kind, file); upload.offsets.put(kind, 0L);
+                LibraryDocuments.Node created = upload.directory.create(filename, "application/octet-stream"); file.put("file", filename); if (kind.equals("audio")) file.put("uri", created.uri.toString()); upload.record.put(kind, file); upload.offsets.put(kind, 0L);
             }
             uploads.put(token, upload); JSObject value = new JSObject(); value.put("token", token); return value;
         });

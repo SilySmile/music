@@ -162,8 +162,10 @@ public class MusicPlaybackService extends Service {
             player = new MediaPlayer(); player.setWakeMode(this, PowerManager.PARTIAL_WAKE_LOCK);
             player.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build());
             File cached = new File(getFilesDir(), "playback-audio/" + id + ".audio");
+            String contentUri = track().optString("contentUri", "");
             boolean remote = !cached.isFile() && track().has("sourceUrl");
             if (remote) player.setDataSource(CloudAudioSource.validate(id, track().getString("sourceUrl")));
+            else if (!cached.isFile() && contentUri.startsWith("content://")) player.setDataSource(this, android.net.Uri.parse(contentUri));
             else player.setDataSource(cached.getAbsolutePath());
             player.setOnPreparedListener(media -> { if (media != player) return; prepared = true; if (remote && cloudPlayed.size() < 5000) { cloudPlayed.add(id); saveCloudPlayed(); } seek((long) (position * 1000)); if (wanted) play(); else refresh(); });
             player.setOnCompletionListener(media -> { if (!checkSleep(true)) advance(1, true); });

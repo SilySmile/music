@@ -21,6 +21,12 @@ describe('Android foreground playback preparation', () => {
     expect(options.finishTrack).toBe(true); expect(options.deadline).toBe(1700000000000); expect(options.position).toBe(12);
     expect(options.tracks[0]).not.toHaveProperty('audio'); expect(options.tracks[0]).not.toHaveProperty('lyrics');
   });
+  it('plays folder-library songs straight from their document URI without copying', async () => {
+    const local = { ...track, contentUri: 'content://com.android.externalstorage.documents/tree/primary%3AMusic/document/primary%3AMusic%2Fsong.mp3' };
+    await prepareAndroidQueue([local], () => {}, new AbortController().signal);
+    expect(plugin.write).not.toHaveBeenCalled(); expect(plugin.finish).not.toHaveBeenCalled();
+    expect(androidQueueOptions([local], local.id, 0, true, 'list', 1, 0, null).tracks[0].contentUri).toBe(local.contentUri);
+  });
   it('streams cloud queue entries without preparing or downloading unheard audio', async () => {
     const streamUrl = `https://example.com/music-library/tracks/${track.id}/stream/audio`;
     const cloud = { ...track, cloud: { source: 'https://example.com/music-library/', streamUrl, publicRead: true, record: {} as NonNullable<Track['cloud']>['record'] } };

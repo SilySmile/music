@@ -9,6 +9,7 @@ export type Track = {
   duration: number;
   format: string;
   audio: Blob;
+  contentUri?: string;
   cover?: Blob;
   lyrics: LyricLine[];
   lyricsSource?: string;

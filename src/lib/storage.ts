@@ -106,7 +106,7 @@ async function hydrate(record: StoredTrack): Promise<Track> {
   };
   const bridge = desktop()!;
   const url = 'libraryAudioUrl' in bridge ? bridge.libraryAudioUrl(record) : undefined;
-  const track = { ...record.metadata, audio: bridge.streamingAudio ? nativeAudio(record, bridge.readLibraryChunk, url) : await read('audio', record.audio), cover: record.cover ? await read('cover', record.cover) : undefined };
+  const track = { ...record.metadata, contentUri: record.audio.uri, audio: bridge.streamingAudio ? nativeAudio(record, bridge.readLibraryChunk, url) : await read('audio', record.audio), cover: record.cover ? await read('cover', record.cover) : undefined };
   nativeTracks.set(track.id, track);
   return track;
 }
@@ -115,11 +115,23 @@ export async function getTracks(): Promise<Track[]> {
   await ensureBackend();
   if (desktop()) {
     await ensureNative();
-    const result: Track[] = [];
     const records = await desktop()!.listLibraryTracks();
     const progress = (message: string) => window.dispatchEvent(new CustomEvent('tingyu-storage-progress', { detail: message }));
+    const result: Track[] = new Array(records.length);
+    let cursor = 0; let done = 0;
     try {
-      for (const [index, record] of records.entries()) { if (!nativeTracks.has(record.metadata.id)) progress(`正在读取文件音乐库 ${index + 1} / ${records.length} · ${record.metadata.title}`); result.push(await hydrate(record)); }
+      // Reading covers and metadata serially over the bridge dominated start-up time on large
+      // libraries; a few workers overlap the bridge round trip with hashing without flooding it.
+      const worker = async () => {
+        while (cursor < records.length) {
+          const index = cursor; cursor += 1;
+          const record = records[index];
+          if (!nativeTracks.has(record.metadata.id)) progress(`正在读取文件音乐库 ${done + 1} / ${records.length} · ${record.metadata.title}`);
+          result[index] = await hydrate(record);
+          done += 1;
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, records.length) }, worker));
       return result.sort((first, second) => second.addedAt - first.addedAt);
     } finally { progress(''); }
   }

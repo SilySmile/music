@@ -117,6 +117,7 @@ public class NativePlaybackPlugin extends Plugin {
             for (int index = 0; index < tracks.length(); index++) {
                 JSONObject track = tracks.getJSONObject(index);
                 if (track.has("sourceUrl")) CloudAudioSource.validate(track.getString("id"), track.getString("sourceUrl"));
+                else if (track.has("contentUri")) { if (!track.getString("contentUri").startsWith("content://")) throw new Exception("后台播放地址无效"); }
                 else if (!audio(track.getString("id"), false).isFile()) throw new Exception("后台音频尚未准备完成，请保持应用前台稍候");
             }
             File file = new File(getContext().getFilesDir(), "playback-queue.json");
