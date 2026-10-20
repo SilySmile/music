@@ -29,7 +29,7 @@ import LyricImportDialog from './components/LyricImportDialog';
 import ExportDialog from './components/ExportDialog';
 import { defaultAIConfig } from './lib/aiTranslation';
 import { loadSavedKey, persistKey } from './lib/secureConfig';
-import { createAudioFader, modeLabels, nextMode, nextTrackId, type PlaybackMode } from './lib/playback';
+import { createAudioFader, modeLabels, nextMode, nextShuffleTrack, nextTrackId, type PlaybackMode } from './lib/playback';
 import SleepSettings, { type SleepState } from './components/SleepSettings';
 import ShortcutSettings from './components/ShortcutSettings';
 import UpdateSettings from './components/UpdateSettings';
@@ -99,6 +99,7 @@ export default function App() {
   const sleepRef = useRef<SleepState>(null);
   const sleepStopped = useRef(false);
   const fadeRef = useRef<ReturnType<typeof createAudioFader> | null>(null);
+  const shuffleBag = useRef<string[]>([]);
   const playbackSettings = useRef({ volume, fadeDuration });
   playbackSettings.current = { volume, fadeDuration };
   const [queue, setQueue] = useState<string[]>([]);
@@ -393,7 +394,12 @@ export default function App() {
     if (nativeActiveRef.current) { nativeControl(direction > 0 ? 'next' : 'previous'); return; }
     const queueTracks = (queue.length ? queue : tracks.map((track) => track.id)).map((id) => tracks.find((track) => track.id === id)).filter((track): track is Track => Boolean(track));
     if (!queueTracks.length) return;
-    const identifier = nextTrackId(queueTracks.map((track) => track.id), currentId, direction, mode);
+    const identifiers = queueTracks.map((track) => track.id);
+    let identifier: string | undefined;
+    if (mode === 'shuffle') {
+      const shuffle = nextShuffleTrack(identifiers, currentId, shuffleBag.current);
+      shuffleBag.current = shuffle.bag; identifier = shuffle.id;
+    } else identifier = nextTrackId(identifiers, currentId, direction, mode);
     const next = queueTracks.find((track) => track.id === identifier);
     if (next) playTrack(next);
   }, [queue, tracks, currentId, mode, playTrack, nativeControl]);

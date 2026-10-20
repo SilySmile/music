@@ -50,6 +50,7 @@ public class MusicPlaybackService extends Service {
     private long deadline = 0;
     private boolean finishTrack = false;
     private String error = "";
+    private final java.util.ArrayList<Integer> shuffleBag = new java.util.ArrayList<>();
     private final LinkedHashSet<String> cloudPlayed = new LinkedHashSet<>();
     private void saveCloudPlayed() { getSharedPreferences("cloud-played", MODE_PRIVATE).edit().putString("ids", new JSONArray(cloudPlayed).toString()).apply(); }
     private final BroadcastReceiver noisyReceiver = new BroadcastReceiver() { @Override public void onReceive(Context context, Intent intent) { pause(true); } };
@@ -173,7 +174,8 @@ public class MusicPlaybackService extends Service {
     }
     private void advance(int direction, boolean ended) {
         if (queue.length() == 0) return;
-        index = PlaybackRules.next(index, queue.length(), direction, mode, ended, Math.random());
+        if ("shuffle".equals(mode)) index = PlaybackRules.nextShuffle(queue.length(), index, shuffleBag, Math.random());
+        else index = PlaybackRules.next(index, queue.length(), direction, mode, ended, Math.random());
         select(track().optString("id"), 0, true);
     }
     private boolean checkSleep(boolean ended) {
@@ -189,6 +191,7 @@ public class MusicPlaybackService extends Service {
             if ("queue".equals(action)) {
                 try (FileInputStream input = new FileInputStream(new File(getFilesDir(), "playback-queue.json")); ByteArrayOutputStream bytes = new ByteArrayOutputStream()) { byte[] buffer = new byte[8192]; int length; while ((length = input.read(buffer)) != -1) bytes.write(buffer, 0, length); queue = new JSONArray(new String(bytes.toByteArray(), StandardCharsets.UTF_8)); }
                 mode = intent.getStringExtra("mode"); volume = (float) intent.getDoubleExtra("volume", 0.7); fade = intent.getIntExtra("fade", 500);
+                shuffleBag.clear();
                 deadline = (long) intent.getDoubleExtra("deadline", 0); finishTrack = intent.getBooleanExtra("finishTrack", false);
                 select(intent.getStringExtra("id"), intent.getDoubleExtra("position", 0), intent.getBooleanExtra("playing", true));
             } else if ("play".equals(action)) play();

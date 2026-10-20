@@ -1,6 +1,26 @@
 export type PlaybackMode = 'list' | 'shuffle' | 'one';
 export const modeLabels: Record<PlaybackMode, string> = { list: '列表循环', shuffle: '随机播放', one: '单曲循环' };
 export function nextMode(mode: PlaybackMode): PlaybackMode { return mode === 'list' ? 'shuffle' : mode === 'shuffle' ? 'one' : 'list'; }
+export type ShuffleResult = { id: string | undefined; bag: string[] };
+
+/**
+ * Shuffle without repeats inside one cycle: the bag holds the songs still to play,
+ * is refilled only after it is empty, and never contains the song playing now.
+ */
+export function nextShuffleTrack(ids: string[], currentId: string, bag: string[], random = Math.random): ShuffleResult {
+  if (!ids.length) return { id: undefined, bag: [] };
+  if (ids.length === 1) return { id: ids[0], bag: [] };
+  let remaining = bag.filter((identifier) => identifier !== currentId && ids.includes(identifier));
+  if (!remaining.length) {
+    remaining = ids.filter((identifier) => identifier !== currentId);
+    for (let index = remaining.length - 1; index > 0; index -= 1) {
+      const swap = Math.min(index, Math.max(0, Math.floor(random() * (index + 1))));
+      [remaining[index], remaining[swap]] = [remaining[swap], remaining[index]];
+    }
+  }
+  return { id: remaining[0], bag: remaining.slice(1) };
+}
+
 export function nextTrackId(ids: string[], currentId: string, direction: number, mode: PlaybackMode, ended = false, random = Math.random) {
   if (!ids.length) return undefined;
   const index = ids.indexOf(currentId);

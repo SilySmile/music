@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAudioFader, nextMode, nextTrackId } from './playback';
+import { createAudioFader, nextMode, nextShuffleTrack, nextTrackId } from './playback';
 
 afterEach(() => { vi.useRealTimers(); });
 function player() {
@@ -17,6 +17,16 @@ describe('playback order and volume envelopes', () => {
     expect(nextTrackId(['a', 'b'], 'a', 1, 'one', false)).toBe('b');
     expect(nextTrackId(['a', 'b'], 'a', 1, 'shuffle', true, () => 0)).toBe('b');
     expect(nextTrackId([], 'a', 1, 'list')).toBeUndefined();
+  });
+  it('plays every song once per shuffle cycle instead of repeating a few', () => {
+    const ids = ['a', 'b', 'c', 'd']; let bag: string[] = []; let current = 'a'; const played: string[] = [];
+    for (let step = 0; step < 3; step += 1) { const next = nextShuffleTrack(ids, current, bag, () => 0.99); bag = next.bag; current = next.id!; played.push(current); }
+    expect(played).toEqual(['b', 'c', 'd']);
+    const afterCycle = nextShuffleTrack(ids, current, bag, () => 0);
+    expect(afterCycle.id).not.toBe(current);
+    expect(nextShuffleTrack(ids, 'a', ['b'], () => 0)).toEqual({ id: 'b', bag: [] });
+    expect(nextShuffleTrack(['a'], 'a', [])).toEqual({ id: 'a', bag: [] });
+    expect(nextShuffleTrack([], 'a', [])).toEqual({ id: undefined, bag: [] });
   });
   it('fades in / out without changing the configured volume', async () => {
     vi.useFakeTimers(); const { audio, fader, setVolume } = player();

@@ -20,6 +20,19 @@ public class PlaybackRulesTest {
         assertEquals(0, PlaybackRules.next(0, 1, 1, "shuffle", true, 0));
         assertEquals(-1, PlaybackRules.next(0, 0, 1, "list", true, 0));
     }
+    @Test public void shuffleBagPlaysEverySongOncePerCycle() {
+        java.util.List<Integer> bag = new java.util.ArrayList<>();
+        java.util.Set<Integer> played = new java.util.HashSet<>();
+        int index = 0;
+        for (int step = 0; step < 3; step++) {
+            index = PlaybackRules.nextShuffle(4, index, bag, 0.999);
+            assertTrue(index != 0);
+            assertTrue(played.add(index));
+        }
+        assertEquals(3, played.size());
+        assertEquals(0, PlaybackRules.nextShuffle(1, 0, bag, 0.5));
+        assertEquals(-1, PlaybackRules.nextShuffle(0, 0, bag, 0.5));
+    }
     @Test public void sleepDeadlineCanStopImmediatelyOrWaitForTheCurrentSong() {
         assertFalse(PlaybackRules.sleepStop(100, 99, false, false, true));
         assertTrue(PlaybackRules.sleepStop(100, 100, false, false, true));
