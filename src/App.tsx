@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { version as appVersion } from '../package.json';
 import { ArrowRight, Check, ChevronDown, Clock3, Disc3, Download, FolderHeart, FolderInput, Globe2, Headphones, Heart, Info, Library, ListMusic, LoaderCircle, Lock, Maximize2, Monitor, Music2, Pause, Play, Repeat, Repeat1, Search, Settings2, Shuffle, SkipBack, SkipForward, Trash2, Unlock, Upload, Volume2, VolumeX, X } from 'lucide-react';
 import type { AIConfig, DesktopState, LibraryView, Track } from './types';
-import { getTracks, getTransfers, patchTrack } from './lib/storage';
+import { getTracks, getTransfers, loadTrackSnapshot, patchTrack } from './lib/storage';
 import { createImportTask, filesFingerprint, runImportTask } from './lib/transfers';
 import type { ImportTask, SourceTransferTask } from './lib/transferTypes';
 import { beginBackgroundTask, dismissBackgroundTask, restoreBackgroundTasks, useBackgroundTasks, type BackgroundHandle, type TaskView } from './lib/backgroundTasks';
@@ -321,15 +321,28 @@ export default function App() {
   useEffect(() => { if (nativeActive) { nativeSleepCommand.current = sleepTimer?.deadline ?? 0; nativeControl('sleep', sleepTimer?.deadline ?? 0, sleepTimer?.behavior ?? 'immediate'); } }, [nativeActive, sleepTimer?.deadline, sleepTimer?.behavior, nativeControl]);
 
   useEffect(() => {
-    const progress = (event: Event) => setStorageProgress((event as CustomEvent<string>).detail);
+    let active = true;
+    let painted = false;
+    const progress = (event: Event) => { if (!painted) setStorageProgress((event as CustomEvent<string>).detail); };
     window.addEventListener('tingyu-storage-progress', progress);
+    // Paint the last known library immediately, then refresh it in the background, so opening the
+    // app no longer waits for the phone folder to be walked again.
+    void loadTrackSnapshot().then((snapshot) => {
+      if (!active || !snapshot?.length) return;
+      painted = true;
+      setTracks(snapshot);
+      const lastId = localStorage.getItem('tingyu-current');
+      if (snapshot.some((track) => track.id === lastId)) setCurrentId(lastId!);
+      setReady(true);
+    }).catch(() => {});
     getTracks().then((stored) => {
+      if (!active) return;
       setTracks(stored);
       const lastId = localStorage.getItem('tingyu-current');
       if (stored.some((track) => track.id === lastId)) setCurrentId(lastId!);
       setReady(true);
-    }).catch(() => { notify('无法读取本地音乐库，请检查设备存储空间或浏览器权限。'); setReady(true); });
-    return () => { clearTimeout(messageTimer.current); window.removeEventListener('tingyu-storage-progress', progress); };
+    }).catch(() => { if (active) { notify('无法读取本地音乐库，请检查设备存储空间或浏览器权限。'); setReady(true); } });
+    return () => { active = false; clearTimeout(messageTimer.current); window.removeEventListener('tingyu-storage-progress', progress); };
   }, [notify]);
 
   const visibleTracks = useMemo(() => {

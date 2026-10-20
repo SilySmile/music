@@ -124,7 +124,6 @@ public class DocumentLibraryPlugin extends Plugin {
     }
     void cancelSourceDownload(String token) throws Exception { nativeOperation(() -> { cancelSourceValue(token); return null; }); }
     private void run(PluginCall call, Operation operation) {
-        cachedIndex = null; cachedIndexUri = null;
         worker.execute(() -> { try { documents.reset(); call.resolve(operation.run()); } catch (Exception error) { call.reject(error.getMessage() == null ? "音乐库操作失败，原曲库未删除" : error.getMessage()); } });
     }
     private JSObject result(JSONObject value) throws Exception { return new JSObject(value.toString()); }
@@ -152,21 +151,47 @@ public class DocumentLibraryPlugin extends Plugin {
         return documents.inspect(Uri.parse(location));
     }
     private String cachedIndexUri;
+    private String cachedIndexStamp;
+    private String cachedIndexText;
     private JSONObject cachedIndex;
+    private String indexStamp(LibraryDocuments.Node root) throws Exception {
+        LibraryDocuments.Node file = root.child("library.json");
+        if (file == null) file = root.child("library.json.backup");
+        return file == null ? "missing" : file.stamp();
+    }
     private JSONObject index(LibraryDocuments.Node root) throws Exception {
         String location = root.uri.toString();
-        // Parsing a large library.json once per song made batch downloads quadratic; the cache is
-        // dropped at every JavaScript call and refreshed by saveIndex, so it never outlives a change.
-        if (cachedIndex != null && location.equals(cachedIndexUri)) return cachedIndex;
+        String stamp = indexStamp(root);
+        // Parsing a large library.json on every call made start-up read and parse the same file
+        // three times. The cache is kept until the file's size or modification time changes.
+        if (cachedIndex != null && location.equals(cachedIndexUri) && stamp.equals(cachedIndexStamp)) return cachedIndex;
         String text = documents.readIndex(root, "library.json");
         if (text == null) throw new Exception("未找到 library.json，请选择完整音乐库；普通歌曲文件夹请先导入");
         JSONObject index = new JSONObject(text);
         if (!"xianqiji-library-folder".equals(index.optString("format")) || index.optInt("version") != 1 || index.optString("libraryId").isEmpty() || !(index.opt("tracks") instanceof JSONObject)) throw new Exception("不支持或已损坏的曲库清单，未覆盖文件");
-        cachedIndex = index; cachedIndexUri = location; return index;
+        cachedIndex = index; cachedIndexUri = location; cachedIndexText = text; cachedIndexStamp = stamp; return index;
     }
     private void saveIndex(LibraryDocuments.Node root, JSONObject index) throws Exception {
-        documents.atomicText(root, "library.json", index.toString(2));
-        cachedIndex = index; cachedIndexUri = root.uri.toString();
+        String text = index.toString(2);
+        documents.atomicText(root, "library.json", text);
+        cachedIndex = index; cachedIndexUri = root.uri.toString(); cachedIndexText = text; cachedIndexStamp = indexStamp(root);
+    }
+    private JSONObject summary(LibraryDocuments.Node root) throws Exception {
+        String stamp = indexStamp(root);
+        File cache = new File(getContext().getFilesDir(), "config/library-summary.json");
+        try {
+            JSONObject saved = new JSONObject(new String(java.nio.file.Files.readAllBytes(cache.toPath()), StandardCharsets.UTF_8));
+            if (stamp.equals(saved.optString("stamp")) && saved.has("trackCount") && saved.has("libraryId")) return saved;
+        } catch (Exception ignored) {}
+        // Start-up only needs the song count and library id; reading the whole index for that cost a
+        // full folder read on every launch, so the answer is remembered until library.json changes.
+        JSONObject index = index(root);
+        JSONObject summary = new JSONObject().put("stamp", indexStamp(root)).put("trackCount", index.getJSONObject("tracks").length()).put("libraryId", index.getString("libraryId"));
+        try {
+            File directory = cache.getParentFile(); if (directory != null && !directory.isDirectory()) directory.mkdirs();
+            java.nio.file.Files.write(cache.toPath(), summary.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) {}
+        return summary;
     }
     private JSONObject cache(LibraryDocuments.Node root) throws Exception {
         String text = documents.readIndex(root, "translations-cache.json");
@@ -209,9 +234,10 @@ public class DocumentLibraryPlugin extends Plugin {
         JSObject event = new JSObject(); event.put("stage", stage); event.put("completed", completed); event.put("total", total); notifyListeners("progress", event);
     }
     private JSONObject verify(LibraryDocuments.Node root, boolean hashes) throws Exception {
-        String before = documents.readIndex(root, "library.json");
+        JSONObject index = index(root);
+        String stamp = cachedIndexStamp;
         String cacheBefore = documents.readIndex(root, "translations-cache.json");
-        JSONObject index = index(root); cache(root); JSONObject tracks = index.getJSONObject("tracks");
+        cache(root); JSONObject tracks = index.getJSONObject("tracks");
         Iterator<String> keys = tracks.keys(); int completed = 0;
         while (keys.hasNext()) {
             String id = LibraryPaths.id(keys.next()); JSONObject record = tracks.getJSONObject(id);
@@ -228,7 +254,7 @@ public class DocumentLibraryPlugin extends Plugin {
                 progress("校验已有音乐库", ++completed, tracks.length());
             }
         }
-        if (!before.equals(documents.readIndex(root, "library.json")) || !java.util.Objects.equals(cacheBefore, documents.readIndex(root, "translations-cache.json"))) throw new Exception("核验期间曲库被其他软件修改，请重试");
+        if (!stamp.equals(indexStamp(root)) || !java.util.Objects.equals(cacheBefore, documents.readIndex(root, "translations-cache.json"))) throw new Exception("核验期间曲库被其他软件修改，请重试");
         return index;
     }
     private JSObject infoValue() throws Exception {
@@ -238,7 +264,7 @@ public class DocumentLibraryPlugin extends Plugin {
             value.put("storageMode", "database"); value.put("path", getContext().getApplicationInfo().dataDir + "/app_webview/（系统管理的 IndexedDB）"); value.put("trackCount", 0);
         } else {
             value.put("storageMode", "folder"); value.put("path", saved.optString("path", uri));
-            try { JSONObject index = index(root(null)); value.put("trackCount", index.getJSONObject("tracks").length()); value.put("libraryId", index.getString("libraryId")); }
+            try { JSONObject summary = summary(root(null)); value.put("trackCount", summary.getInt("trackCount")); value.put("libraryId", summary.getString("libraryId")); }
             catch (Exception error) { value.put("trackCount", 0); value.put("error", "目录失联或授权失效，请重新选择已有音乐库。" + error.getMessage()); }
         }
         return value;
@@ -398,12 +424,41 @@ public class DocumentLibraryPlugin extends Plugin {
             return new JSObject();
         });
     }
+    private byte[] coverBlock(LibraryDocuments.Node root, JSONObject record, long offset, int length) throws Exception {
+        JSONObject cover = record.getJSONObject("cover");
+        File directory = new File(getContext().getFilesDir(), "cover-cache");
+        File cached = new File(directory, cover.getString("sha256") + ".bin");
+        if (!cached.isFile() || cached.length() != cover.getLong("size")) {
+            LibraryDocuments.Node node = media(root, record, "cover");
+            if (!directory.isDirectory() && !directory.mkdirs()) throw new Exception("无法创建封面缓存目录");
+            File pending = new File(directory, cached.getName() + ".tmp");
+            try (FileOutputStream output = new FileOutputStream(pending)) {
+                for (long position = 0; position < node.size; position += 1024 * 1024) output.write(node.read(position, (int) Math.min(1024 * 1024, node.size - position)));
+            }
+            if (!pending.renameTo(cached)) { pending.delete(); throw new Exception("封面缓存保存失败"); }
+            trimCoverCache(directory);
+        }
+        try (java.io.RandomAccessFile file = new java.io.RandomAccessFile(cached, "r")) {
+            byte[] bytes = new byte[length]; file.seek(offset); file.readFully(bytes); return bytes;
+        }
+    }
+    private void trimCoverCache(File directory) {
+        File[] files = directory.listFiles();
+        if (files == null) return;
+        long total = 0; for (File file : files) total += file.length();
+        if (total <= 128L * 1024 * 1024) return;
+        java.util.Arrays.sort(files, (first, second) -> Long.compare(first.lastModified(), second.lastModified()));
+        for (File file : files) { if (total <= 96L * 1024 * 1024) break; long size = file.length(); if (file.delete()) total -= size; }
+    }
     @PluginMethod public void read(PluginCall call) {
         run(call, () -> {
             LibraryDocuments.Node root = root(call.getString("target")); JSONObject record = record(root, call.getString("id")); String kind = call.getString("kind", "audio");
             LibraryDocuments.Node node = media(root, record, kind); long offset = SafeNumbers.fileOffset(call.getData().opt("offset")); long length = SafeNumbers.fileOffset(call.getData().opt("length"));
             if (length > 4 * 1024 * 1024 || offset > node.size || length > node.size - offset) throw new Exception("读取分块超出文件范围");
-            JSObject value = new JSObject(); value.put("data", Base64.encodeToString(node.read(offset, (int) length), Base64.NO_WRAP)); return value;
+            // Covers are re-read on every start-up and barely change, so keep a private copy instead
+            // of walking the phone folder again for each one.
+            byte[] bytes = kind.equals("cover") && record.has("cover") ? coverBlock(root, record, offset, (int) length) : node.read(offset, (int) length);
+            JSObject value = new JSObject(); value.put("data", Base64.encodeToString(bytes, Base64.NO_WRAP)); return value;
         });
     }
     @PluginMethod public void patch(PluginCall call) {

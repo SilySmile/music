@@ -25,6 +25,32 @@ async function ensureBackend() {
   await mobileReady;
 }
 const nativeTracks = new Map<string, Track>();
+const storedRecords = new Map<string, StoredTrack>();
+const snapshotDatabase = openDB('tingyu-library-snapshot', 1, {
+  upgrade(database) { if (!database.objectStoreNames.contains('snapshot')) database.createObjectStore('snapshot'); },
+});
+type TrackSnapshot = { libraryKey: string; rows: { record: StoredTrack; cover?: Blob }[] };
+/** Last saved list for the current phone library, so a cold start can paint before walking the folder. */
+export async function loadTrackSnapshot(): Promise<Track[] | undefined> {
+  if (!isAndroidLibrary() || window.tingyuDesktop) return undefined;
+  await ensureBackend();
+  const snapshot = await (await snapshotDatabase).get('snapshot', 'current') as TrackSnapshot | undefined;
+  if (!snapshot || snapshot.libraryKey !== mobileLibraryKey || !snapshot.rows?.length) return undefined;
+  const bridge = androidLibraryBridge();
+  const tracks: Track[] = [];
+  for (const { record, cover } of snapshot.rows) {
+    storedRecords.set(record.metadata.id, record);
+    const track: Track = { ...record.metadata, contentUri: record.audio.uri, audio: nativeAudio(record, bridge.readLibraryChunk, bridge.libraryAudioUrl(record)), cover };
+    tracks.push(track);
+  }
+  return tracks.sort((first, second) => second.addedAt - first.addedAt);
+}
+export async function saveTrackSnapshot(tracks: Track[]) {
+  if (!isAndroidLibrary() || window.tingyuDesktop) return;
+  const rows = tracks.flatMap((track) => { const record = storedRecords.get(track.id); return record ? [{ record, cover: track.cover }] : []; });
+  if (!rows.length) return;
+  await (await snapshotDatabase).put('snapshot', { libraryKey: mobileLibraryKey, rows }, 'current');
+}
 export function invalidateLibraryTracks(ids: string[]) { for (const id of ids) nativeTracks.delete(id); }
 const chunkSize = 4 * 1024 * 1024;
 export async function sourceLibraryScope() {
@@ -94,6 +120,7 @@ async function ensureNative() {
 }
 
 async function hydrate(record: StoredTrack): Promise<Track> {
+  storedRecords.set(record.metadata.id, record);
   const existing = nativeTracks.get(record.metadata.id);
   if (existing) { const track = { ...existing, ...record.metadata }; nativeTracks.set(track.id, track); return track; }
   const read = async (kind: 'audio' | 'cover', media: StoredTrack['audio']) => {
@@ -132,7 +159,9 @@ export async function getTracks(): Promise<Track[]> {
         }
       };
       await Promise.all(Array.from({ length: Math.min(4, records.length) }, worker));
-      return result.sort((first, second) => second.addedAt - first.addedAt);
+      const sorted = result.sort((first, second) => second.addedAt - first.addedAt);
+      void saveTrackSnapshot(sorted).catch(() => {});
+      return sorted;
     } finally { progress(''); }
   }
   return (await (await database).getAll('tracks')).sort((first, second) => second.addedAt - first.addedAt);

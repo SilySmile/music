@@ -103,8 +103,15 @@ final class LibraryDocuments {
 
         void delete() throws Exception { if (!DocumentsContract.deleteDocument(resolver, uri)) throw new Exception("无法删除临时文件"); reset(); }
 
-        String digest() throws Exception {
-            if (directory) throw new Exception("音频不是普通文件");
+        String stamp() throws Exception {
+            String[] columns = { DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED };
+            try (Cursor cursor = resolver.query(uri, columns, null, null, null)) {
+                if (cursor == null || !cursor.moveToFirst()) return "missing";
+                return (cursor.isNull(0) ? "?" : Long.toString(cursor.getLong(0))) + ":" + (cursor.isNull(1) ? "?" : Long.toString(cursor.getLong(1)));
+            }
+        }
+
+        String digest() throws Exception {            if (directory) throw new Exception("音频不是普通文件");
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             try (InputStream input = resolver.openInputStream(uri)) {
                 if (input == null) throw new Exception("音频文件无法读取");
