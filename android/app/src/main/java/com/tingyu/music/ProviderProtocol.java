@@ -72,7 +72,8 @@ public final class ProviderProtocol {
             default: throw new Exception("不支持此音乐操作");
         }
         boolean mobile = action.equals("login-create") || action.equals("login-check") || action.equals("session");
-        JSONObject comm = mobile ? object("ct", 11, "cv", 20090008, "v", 20090008, "tmeAppID", "qqmusic", "guid", guid, "qq", uin, "authst", key) : object("ct", 19, "cv", 2201, "guid", guid, "uin", uin.matches("[0-9]{1,16}") ? Long.parseLong(uin) : 0, "authst", key);
+        JSONObject comm = mobile ? object("ct", 11, "cv", 20090008, "v", 20090008, "chid", "10003505", "tmeAppID", "qqmusic", "guid", guid) : object("ct", 19, "cv", 2201, "guid", guid, "uin", uin.matches("[0-9]{1,16}") ? Long.parseLong(uin) : 0, "authst", key);
+        if (mobile && !uin.equals("0")) comm.put("qq", uin); if (mobile && !key.isEmpty()) comm.put("authst", key);
         return new Request("https://u.y.qq.com/cgi-bin/musicu.fcg", object("comm", comm, "req_0", object("module", module, "method", method, "param", payload)).toString(), "https://y.qq.com/", mobile);
     }
 }

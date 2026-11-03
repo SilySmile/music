@@ -20,8 +20,23 @@ async function main() {
   async function launch() {
     const env = { ...process.env, TINGYU_TEST: '1', TINGYU_TEST_DATA: profile }; delete env.ELECTRON_RUN_AS_NODE;
     application = await _electron.launch({ executablePath: process.env.TINGYU_EXECUTABLE || path.join(root, 'node_modules/electron/dist/electron.exe'), args: process.env.TINGYU_EXECUTABLE ? [] : [root], env, cwd: root, timeout: 60000 });
-    await application.evaluate(({ net }, fixture) => {
+    await application.evaluate(({ net, app }, fixture) => {
       const original = net.fetch.bind(net); const audio = Uint8Array.from(fixture.bytes);
+      const wire = process.mainModule.require(process.mainModule.require('node:path').join(app.getAppPath(), 'electron/provider-qr.cjs'));
+      globalThis.WebSocket = class extends EventTarget {
+        constructor() { super(); queueMicrotask(() => this.dispatchEvent(new Event('open'))); }
+        emit(bytes) { const value = Uint8Array.from(bytes); this.dispatchEvent(new MessageEvent('message', { data: value.buffer })); }
+        send(bytes) {
+          if (bytes[0] === 16) queueMicrotask(() => this.emit([32, 3, 0, 0, 0]));
+          if (bytes[0] === 130) {
+            const input = wire.reader(Buffer.from(bytes).subarray(1)); input.integer(); const body = wire.reader(input.rest()); body.read(2); body.properties(); const topic = body.string();
+            queueMicrotask(() => { this.emit([144, 4, 0, 1, 0, 1]);
+              if (globalThis.providerFixture.login) setTimeout(() => { const props = wire.property('type', 'cookies'); this.emit(wire.packet(48, Buffer.concat([wire.text(topic), wire.variable(props.length), props, Buffer.from(JSON.stringify({ cookies: { qqmusic_uin: { value: '123456' }, qqmusic_key: { value: 'fixture-one-time-exchange' } } }))]))); }, 50);
+            });
+          }
+        }
+        close() {}
+      };
       globalThis.providerFixture = { mode: 'good', login: true, mediaCalls: 0, serverCalls: [] };
       const envelope = (data, code = 0) => Response.json({ code: 0, req_0: { code, ...(data ? { data } : {}) } });
       net.fetch = async (url, options = {}) => {
@@ -29,7 +44,8 @@ async function main() {
         if (target.origin === 'https://providers.fixture.test') { state.serverCalls.push(target.pathname); return original(fixture.endpoint + target.pathname.slice(4) + target.search, options); }
         if (target.hostname === 'u.y.qq.com') {
           const request = JSON.parse(options.body); const { method, param } = request.req_0;
-          if (method === 'GetLoginUserInfo') return envelope({ code: 0, ...(String(options.headers.Cookie).includes('qm_keyst=fixture-private-session') ? { user: { uin: '123456', nick: '测试 QQ 用户' } } : {}) });
+          if (method === 'GetLoginUserInfo') return String(options.headers.Cookie).includes('qm_keyst=fixture-private-session') ? envelope({ info: { retCode: 0, nick: '测试 QQ 用户' } }) : envelope(null, 1000);
+          if (method === 'Login') { if (param.token !== 'fixture-one-time-exchange') throw Error('Wrong QR exchange token'); return envelope({ musicid: '123456', musickey: 'fixture-private-session', refresh_key: 'fixture-private-refresh' }); }
           if (method === 'CreateQRCode') return envelope({ qrcodeID: 'fixture-qrcode', qrcode: 'https://y.qq.com/fixture-login', expiresIn: 180 });
           if (method === 'CheckQRCode') return state.login ? envelope({ musicid: '123456', musickey: 'fixture-private-session', refresh_key: 'fixture-private-refresh' }) : envelope(null, 40000);
           if (method === 'DoSearchForQQMusicMobile') return envelope({ body: { item_song: [{ mid: 'fixture001', title: '测试在线歌曲', singer: [{ name: '测试歌手' }], album: { name: '测试专辑' }, interval: 10 }] } });

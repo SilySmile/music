@@ -52,11 +52,11 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
           setSession(account); setLogin(next); setStatus('已登录，搜索与播放将使用当前账号权限。'); return;
         }
         if (next.status === 'expired') { setLogin(next); setStatus('登录二维码已过期，请重新生成。'); return; }
-        if (next.status === 'confirmed') setStatus('已扫码，请在官方应用中确认登录。');
+        if (next.status === 'confirmed') { setLogin((previous) => previous && previous.status !== 'confirmed' ? { ...previous, status: 'confirmed' } : previous); setStatus('已检测到扫码，请在官方应用中确认登录，正在等待账号授权。'); }
       } catch (error) { if (abort.signal.aborted) return; setStatus(errorText(error)); }
-      if (!abort.signal.aborted) timer = setTimeout(() => void poll(), 2500);
+      if (!abort.signal.aborted) timer = setTimeout(() => void poll(), 1000);
     };
-    timer = setTimeout(() => void poll(), 1800);
+    timer = setTimeout(() => void poll(), 800);
     return () => { abort.abort(); clearTimeout(timer); };
   }, [provider, login?.key, login?.status]);
 

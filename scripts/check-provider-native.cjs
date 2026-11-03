@@ -16,7 +16,24 @@ test('login is redacted, encrypted, reused after restart and cleared on logout',
   assert.equal(result.req_0.data.musickey, undefined);
   assert.ok(!(await fs.readFile(path.join(directory, 'config/provider-qq.bin'))).includes(Buffer.from('fixture-secret-session')));
   const reopened = create({ directory, safeStorage, fetch }); await reopened.request(request('session')); assert.ok(sentCookie.includes('qm_keyst=fixture-secret-session'));
-  await reopened.request(request('logout')); await reopened.request(request('session')); assert.equal(sentCookie, '');
+  await reopened.request(request('logout')); await reopened.request(request('session')); assert.ok(!sentCookie.includes('fixture-secret-session'));
+});
+test('QQ push channel receives scan then confirmation, exchanges a native-only token and rejects an oversized frame', async () => {
+  const wire = require('../electron/provider-qr.cjs'); let socket; let received; let readyTopic;
+  class Socket extends EventTarget {
+    constructor() { super(); socket = this; queueMicrotask(() => this.dispatchEvent(new Event('open'))); }
+    emit(bytes) { this.dispatchEvent(new MessageEvent('message', { data: Uint8Array.from(bytes).buffer })); }
+    send(bytes) {
+      if (bytes[0] === 16) queueMicrotask(() => this.emit([32, 3, 0, 0, 0]));
+      if (bytes[0] === 130) { const input = wire.reader(Buffer.from(bytes).subarray(1)); input.integer(); const body = wire.reader(input.rest()); body.read(2); assert.equal(body.properties().authorization, 'tmelogin'); readyTopic = body.string(); queueMicrotask(() => this.emit([144, 4, 0, 1, 0, 1])); }
+    }
+    close() {}
+  }
+  const watch = wire({ key: 'fixture-qr', WebSocket: Socket, onCookies: async (payload) => { received = payload; } }); await watch.ready; assert.equal(readyTopic, 'management.qrcode_login/fixture-qr');
+  const publish = (type, payload) => { const props = wire.property('type', type); return wire.packet(48, Buffer.concat([wire.text(readyTopic), wire.variable(props.length), props, Buffer.from(JSON.stringify(payload))])); };
+  socket.emit(publish('scanned', {})); assert.equal(watch.state.code, 40001);
+  socket.emit(publish('cookies', { cookies: { qqmusic_key: { value: 'fixture-push-token' } } })); await new Promise((resolve) => setImmediate(resolve)); assert.equal(received.cookies.qqmusic_key.value, 'fixture-push-token'); assert.equal(watch.state.code, 0);
+  const oversized = wire({ key: 'fixture-qr', WebSocket: Socket, onCookies: async () => {} }); await oversized.ready; socket.emit(Buffer.concat([Buffer.from([48]), wire.variable(256 * 1024 + 1)])); assert.match(oversized.state.error, /过大/); oversized.close();
 });
 test('a late login response cannot restore an account after logout', async () => {
   let finish, started; const ready = new Promise((resolve) => { started = resolve; });

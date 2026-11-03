@@ -24,6 +24,7 @@ export async function providerRequest<T = Record<string, any>>(provider: MusicPr
     const response = value as Record<string, any>;
     if (provider === 'qq') {
       const item = response.req_0;
+      if (action === 'session' && response.code === 0 && item?.code === 1000) return { code: 1000 } as T;
       if (action === 'login-check' && response.code === 0 && [40000, 40001, 40002].includes(item?.code)) return { code: item.code } as T;
       if (action !== 'logout' && (!item || response.code !== 0 || item.code !== 0)) throw Error('QQ 音乐暂时拒绝了请求，请稍后重试或重新登录。');
       if (action === 'login-check' && item?.data) return { code: item.code, ...item.data } as T;
@@ -56,8 +57,8 @@ export async function searchProvider(provider: MusicProvider, query: string, pag
 }
 export async function providerSession(provider: MusicProvider, signal?: AbortSignal): Promise<ProviderSession> {
   const response = await providerRequest(provider, 'session', {}, signal);
-  const profile = provider === 'qq' ? response.user || response.userInfo || response : response.profile;
-  const loggedIn = provider === 'qq' ? (response.code === 0 || response.code === undefined) && !!(profile?.uin || profile?.encryptUin) : response.code === 200 && !!response.account && !!profile;
+  const profile = provider === 'qq' ? response.info || response.user || response.userInfo || response : response.profile;
+  const loggedIn = provider === 'qq' ? (response.code === 0 || response.code === undefined) && (!!(profile?.uin || profile?.encryptUin) || !!response.info && profile.retCode === 0 && !!text(profile.nick)) : response.code === 200 && !!response.account && !!profile;
   return { loggedIn, accountName: loggedIn ? text(profile.nick || profile.nickname, '已登录账号') : undefined };
 }
 export async function beginProviderLogin(provider: MusicProvider, signal?: AbortSignal): Promise<ProviderLogin> {
@@ -66,7 +67,7 @@ export async function beginProviderLogin(provider: MusicProvider, signal?: Abort
   const qr = provider === 'qq' ? response.qrcode : `https://music.163.com/login?codekey=${encodeURIComponent(key)}`;
   if (typeof qr !== 'string' || qr.length > 100000) throw Error('平台未返回有效的登录二维码。');
   const qrImageUrl = /^data:image\/png;base64,[a-zA-Z0-9+/=]+$/.test(qr) ? qr : await QRCode.toDataURL(qr, { width: 240, margin: 2 });
-  return { status: 'waiting', key, qrImageUrl, expiresAt: Date.now() + Math.min(Number(response.expiresIn) || 180, 300) * 1000 };
+  return { status: 'waiting', key, qrImageUrl, expiresAt: Date.now() + Math.min(Number(response.expiresIn) || 180, 900) * 1000 };
 }
 export async function checkProviderLogin(provider: MusicProvider, previous: ProviderLogin, signal?: AbortSignal): Promise<ProviderLogin> {
   if (Date.now() >= previous.expiresAt) return { ...previous, status: 'expired' };

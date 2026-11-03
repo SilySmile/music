@@ -47,14 +47,15 @@ function buildRequest(request, cookie) {
   };
   const route = routes[action]; if (!route) throw Error('不支持此音乐操作。');
   const mobile = ['login-create', 'login-check', 'session'].includes(action);
-  const comm = mobile ? { ct: 11, cv: 20090008, v: 20090008, tmeAppID: 'qqmusic', guid, qq: uin, authst: key } : { ct: 19, cv: 2201, guid, uin: Number(uin) || 0, authst: key };
+  const comm = mobile ? { ct: 11, cv: 20090008, v: 20090008, chid: '10003505', tmeAppID: 'qqmusic', guid, ...(uin !== '0' ? { qq: uin } : {}), ...(key ? { authst: key } : {}) } : { ct: 19, cv: 2201, guid, uin: Number(uin) || 0, authst: key };
   return { url: 'https://u.y.qq.com/cgi-bin/musicu.fcg', body: JSON.stringify({ comm, req_0: { module: route[0], method: route[1], param: route[2] } }), headers: { 'Content-Type': 'application/json', Referer: 'https://y.qq.com/', Origin: 'https://y.qq.com', 'User-Agent': mobile ? 'QQMusic 20090008(android 14)' : ua } };
 }
 function captureLogin(cookie, value) {
-  const source = value?.req_0?.data || {};
-  if (source.musickey && (source.musicid || source.uin)) {
+  const body = value?.req_0?.data || {}; const source = { ...body.data, ...body };
+  const musicid = source.musicid || source.uin || source.str_musicid;
+  if (source.musickey && musicid) {
     cookie.qm_keyst = cookie.qqmusic_key = String(source.musickey);
-    cookie.uin = cookie.qqmusic_uin = String(source.musicid || source.uin);
+    cookie.uin = cookie.qqmusic_uin = cookie.musicid = String(musicid);
     for (const key of ['refresh_token', 'refresh_key', 'openid', 'access_token']) if (source[key]) cookie[key] = String(source[key]);
   }
 }
@@ -69,8 +70,10 @@ function mediaUrl(provider, value) {
   return url.href;
 }
 module.exports = function createProviders({ directory, safeStorage, fetch }) {
+  const deviceGuid = crypto.randomBytes(16).toString('hex');
   const controllers = new Map(); const revisions = { qq: 0, netease: 0 }; const queues = {};
   const downloads = new Map(); const progress = new Map();
+  const qrSessions = new Map();
   const file = (provider) => path.join(directory, 'config', `provider-${provider}.bin`);
   const read = async (provider) => { try { return JSON.parse(safeStorage.decryptString(await fs.readFile(file(provider)))); } catch (error) { if (error.code === 'ENOENT') return {}; throw Error('本机音乐账号凭据无法解密，请退出账号后重新登录。'); } };
   const save = async (provider, cookie) => {
@@ -108,10 +111,17 @@ module.exports = function createProviders({ directory, safeStorage, fetch }) {
       const { provider, action } = request;
       if (action === 'logout') {
         revisions[provider]++;
+        if (provider === 'qq') { for (const session of qrSessions.values()) session.close(); qrSessions.clear(); }
         await serial(provider, () => fs.rm(file(provider), { force: true }));
         return { code: 200 };
       }
       const revision = revisions[provider]; const cookie = await read(provider);
+      if (provider === 'qq' && !cookie.guid) cookie.guid = deviceGuid;
+      if (provider === 'qq' && action === 'login-check' && qrSessions.has(request.data?.key)) {
+        const session = qrSessions.get(request.data.key);
+        if (session.state.error) throw Error(session.state.error);
+        return { code: 0, req_0: { code: 0, data: { code: session.state.code } } };
+      }
       const built = buildRequest(request, cookie); const controller = new AbortController(); controllers.set(request.id, controller);
       try {
         const response = await fetch(built.url, { method: 'POST', headers: { ...built.headers, Cookie: Object.entries(cookie).map(([key, value]) => `${key}=${value}`).join('; ') }, body: built.body, credentials: 'omit', redirect: 'error', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]) });
@@ -121,9 +131,30 @@ module.exports = function createProviders({ directory, safeStorage, fetch }) {
         let body; try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw Error('音乐平台返回了无效数据。'); }
         const changed = {};
         for (const header of response.headers.getSetCookie?.() || []) { const pair = header.split(';', 1)[0]; const at = pair.indexOf('='); if (at > 0 && /^[\w-]+$/.test(pair.slice(0, at))) changed[pair.slice(0, at)] = pair.slice(at + 1); }
-        if (provider === 'qq' && action === 'login-check') captureLogin(changed, body);
+        if (provider === 'qq') { captureLogin(changed, body); if (changed.qm_keyst) changed.guid = cookie.guid; }
         if (Object.keys(changed).length && revision === revisions[provider]) await serial(provider, async () => { if (revision === revisions[provider]) await save(provider, { ...await read(provider), ...changed }); });
         if (revision !== revisions[provider]) throw Error('账号已退出，请重新操作。');
+        if (provider === 'qq' && action === 'login-create' && body?.req_0?.code === 0 && body.req_0.data?.qrcodeID) {
+          for (const session of qrSessions.values()) session.close(); qrSessions.clear();
+          const key = body.req_0.data.qrcodeID;
+          const session = require('./provider-qr.cjs')({ key, onCookies: async (payload) => {
+            const cookies = payload.cookies || {};
+            const uin = cookies.qqmusic_uin?.value || cookies.uin?.value || payload.uin;
+            const token = cookies.qqmusic_key?.value || cookies.qm_keyst?.value || payload.musickey;
+            if (!/^\d{1,16}$/.test(String(uin)) || typeof token !== 'string' || !token || token.length > 4096) throw Error('QQ 扫码确认信息不完整，请重试。');
+            const login = buildRequest({ provider: 'qq', action: 'session' }, { guid: cookie.guid });
+            const input = JSON.parse(login.body); input.comm.tmeLoginType = 6; input.req_0 = { module: 'music.login.LoginServer', method: 'Login', param: { musicid: Number(uin), qrCodeID: key, token } };
+            const response = await fetch(login.url, { method: 'POST', headers: login.headers, body: JSON.stringify(input), credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(20000) });
+            if (!response.ok) throw Error('QQ 扫码凭据兑换失败，请重试。');
+            const chunks = []; let size = 0; for await (const bytes of response.body) { size += bytes.length; if (size > 4 * 1024 * 1024) throw Error('QQ 登录响应过大。'); chunks.push(Buffer.from(bytes)); }
+            const value = JSON.parse(Buffer.concat(chunks).toString()); const changed = {};
+            if (value.code !== 0 || value.req_0?.code !== 0) throw Error('QQ 未接受本次扫码确认，请刷新二维码。');
+            captureLogin(changed, value); if (!changed.qm_keyst) throw Error('QQ 未返回有效账号凭据，请重试。'); changed.guid = cookie.guid;
+            await serial('qq', async () => { if (revision !== revisions.qq) throw Error('账号已退出。'); await save('qq', { ...await read('qq'), ...changed }); });
+          } });
+          qrSessions.set(key, session);
+          try { await session.ready; controller.signal.throwIfAborted(); } catch (error) { session.close(); qrSessions.delete(key); throw error; }
+        }
         return redact(body);
       } finally { controllers.delete(request.id); }
     },

@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { checkProviderLogin, parseProviderMedia, parseProviderSearch, providerIdentifier, providerRequest, validateProviderAudioUrl } from './providerSearch';
+import { checkProviderLogin, parseProviderMedia, parseProviderSearch, providerIdentifier, providerRequest, providerSession, validateProviderAudioUrl } from './providerSearch';
 afterEach(() => vi.unstubAllGlobals());
 describe('device-local music providers', () => {
+  it('recognizes actual QQ info/retCode account responses and the anonymous 1000 response', async () => {
+    let response: unknown = { code: 0, req_0: { code: 0, data: { info: { retCode: 0, nick: '已确认账号' } } } };
+    vi.stubGlobal('window', { tingyuDesktop: { requestProvider: async () => response } });
+    expect(await providerSession('qq')).toEqual({ loggedIn: true, accountName: '已确认账号' });
+    response = { code: 0, req_0: { code: 1000 } }; expect((await providerSession('qq')).loggedIn).toBe(false);
+  });
   it('accepts QQ waiting and scanned states returned in the CGI envelope', async () => {
     let code = 40000;
     vi.stubGlobal('window', { tingyuDesktop: { requestProvider: async () => ({ code: 0, req_0: { code } }) } });
