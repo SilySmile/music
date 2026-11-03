@@ -50,6 +50,9 @@ public class MusicPlaybackService extends Service {
     private long deadline = 0;
     private boolean finishTrack = false;
     private String error = "";
+    private String libraryScope = "";
+    private double pendingPosition = 0;
+    private long checkpointAt = 0;
     private final java.util.ArrayList<Integer> shuffleBag = new java.util.ArrayList<>();
     private final LinkedHashSet<String> cloudPlayed = new LinkedHashSet<>();
     private void saveCloudPlayed() { getSharedPreferences("cloud-played", MODE_PRIVATE).edit().putString("ids", new JSONArray(cloudPlayed).toString()).apply(); }
@@ -71,13 +74,23 @@ public class MusicPlaybackService extends Service {
         JSONObject state = new JSONObject();
         try {
             state.put("active", queue.length() > 0); state.put("id", track().optString("id")); state.put("playing", playing());
-            state.put("position", prepared && player != null ? player.getCurrentPosition() / 1000d : 0);
+            state.put("position", prepared && player != null ? player.getCurrentPosition() / 1000d : pendingPosition);
             state.put("duration", prepared && player != null ? player.getDuration() / 1000d : track().optDouble("duration", 0));
             state.put("mode", mode); state.put("volume", volume); state.put("error", error);
             state.put("deadline", deadline); state.put("finishTrack", finishTrack);
             state.put("cloudPlayed", new JSONArray(cloudPlayed));
         } catch (Exception ignored) {}
         return state;
+    }
+
+    private void savePosition(boolean force) {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (!prepared || player == null || queue.length() == 0 || (!force && now - checkpointAt < 2000)) return;
+        JSONObject state = state();
+        JSONObject saved = PlaybackCheckpoint.create(libraryScope, state.optString("id"), state.optDouble("position", -1), state.optDouble("duration", -1));
+        if (!saved.has("id")) return;
+        getSharedPreferences("playback-position", MODE_PRIVATE).edit().putString("checkpoint", saved.toString()).apply();
+        checkpointAt = now;
     }
 
     @Override
@@ -100,7 +113,7 @@ public class MusicPlaybackService extends Service {
         session.setActive(true);
         ContextCompat.registerReceiver(this, noisyReceiver, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), ContextCompat.RECEIVER_NOT_EXPORTED);
         startForeground(10, notification());
-        handler.post(new Runnable() { @Override public void run() { checkSleep(false); broadcast(); handler.postDelayed(this, 500); } });
+        handler.post(new Runnable() { @Override public void run() { checkSleep(false); savePosition(false); broadcast(); handler.postDelayed(this, 500); } });
     }
 
     private PendingIntent action(String action, int request) { return PendingIntent.getService(this, request, new Intent(this, MusicPlaybackService.class).setAction(action), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE); }
@@ -149,13 +162,14 @@ public class MusicPlaybackService extends Service {
     private void pause(boolean immediate) {
         wanted = false; fadeRevision++;
         if (!prepared || player == null) { refresh(); return; }
-        Runnable stop = () -> { try { if (player != null && player.isPlaying()) player.pause(); } catch (Exception ignored) {} gain = 1f; applyVolume(); refresh(); };
+        Runnable stop = () -> { try { if (player != null && player.isPlaying()) player.pause(); } catch (Exception ignored) {} savePosition(true); gain = 1f; applyVolume(); refresh(); };
         if (immediate || !playing()) stop.run(); else ramp(0f, stop);
     }
     private void seek(long position) { if (prepared && player != null) { player.seekTo((int) Math.max(0, Math.min(position, player.getDuration()))); broadcast(); } }
 
     private void select(String identifier, double position, boolean start) {
         for (int candidate = 0; candidate < queue.length(); candidate++) if (queue.optJSONObject(candidate).optString("id").equals(identifier)) { index = candidate; break; }
+        pendingPosition = Double.isFinite(position) ? Math.max(0, position) : 0;
         fadeRevision++; if (player != null) { player.release(); player = null; } prepared = false; wanted = start; error = "";
         try {
             String id = track().getString("id"); if (!id.matches("[a-f0-9]{64}")) throw new Exception("无效歌曲");
@@ -168,6 +182,7 @@ public class MusicPlaybackService extends Service {
             else if (!cached.isFile() && contentUri.startsWith("content://")) player.setDataSource(this, android.net.Uri.parse(contentUri));
             else player.setDataSource(cached.getAbsolutePath());
             player.setOnPreparedListener(media -> { if (media != player) return; prepared = true; if (remote && cloudPlayed.size() < 5000) { cloudPlayed.add(id); saveCloudPlayed(); } seek((long) (position * 1000)); if (wanted) play(); else refresh(); });
+            player.setOnSeekCompleteListener(media -> { if (media == player) { savePosition(true); broadcast(); } });
             player.setOnCompletionListener(media -> { if (!checkSleep(true)) advance(1, true); });
             player.setOnErrorListener((media, what, extra) -> { error = "此音频无法解码，请尝试 MP3 / WAV 或检查源文件"; wanted = false; prepared = false; refresh(); return true; });
             session.setMetadata(new MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, track().optString("title")).putString(MediaMetadata.METADATA_KEY_ARTIST, track().optString("artist")).putString(MediaMetadata.METADATA_KEY_ALBUM, track().optString("album")).putLong(MediaMetadata.METADATA_KEY_DURATION, (long) (track().optDouble("duration") * 1000)).build());
@@ -191,9 +206,11 @@ public class MusicPlaybackService extends Service {
         String action = intent.getAction();
         try {
             if ("queue".equals(action)) {
+                savePosition(true);
                 try (FileInputStream input = new FileInputStream(new File(getFilesDir(), "playback-queue.json")); ByteArrayOutputStream bytes = new ByteArrayOutputStream()) { byte[] buffer = new byte[8192]; int length; while ((length = input.read(buffer)) != -1) bytes.write(buffer, 0, length); queue = new JSONArray(new String(bytes.toByteArray(), StandardCharsets.UTF_8)); }
                 mode = intent.getStringExtra("mode"); volume = (float) intent.getDoubleExtra("volume", 0.7); fade = intent.getIntExtra("fade", 500);
                 shuffleBag.clear();
+                libraryScope = intent.getStringExtra("libraryScope");
                 deadline = (long) intent.getDoubleExtra("deadline", 0); finishTrack = intent.getBooleanExtra("finishTrack", false);
                 select(intent.getStringExtra("id"), intent.getDoubleExtra("position", 0), intent.getBooleanExtra("playing", true));
             } else if ("play".equals(action)) play();
@@ -216,6 +233,7 @@ public class MusicPlaybackService extends Service {
 
     @Override public IBinder onBind(Intent intent) { return null; }
     @Override public void onDestroy() {
+        savePosition(true);
         instance = null; handler.removeCallbacksAndMessages(null); if (player != null) player.release();
         unregisterReceiver(noisyReceiver);
         if (session != null) { session.setActive(false); session.release(); }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { version as appVersion } from '../package.json';
 import { ArrowRight, Check, ChevronDown, Clock3, Disc3, Download, FolderHeart, FolderInput, Globe2, Headphones, Heart, Info, Library, ListMusic, LoaderCircle, Lock, Maximize2, Monitor, Music2, Pause, Play, Repeat, Repeat1, Search, Settings2, Shuffle, SkipBack, SkipForward, Trash2, Unlock, Upload, Volume2, VolumeX, X } from 'lucide-react';
 import type { AIConfig, DesktopState, LibraryView, Track } from './types';
-import { getTracks, getTransfers, loadTrackSnapshot, patchTrack } from './lib/storage';
+import { getTracks, getTransfers, loadTrackSnapshot, patchTrack, sourceLibraryScope } from './lib/storage';
 import { createImportTask, filesFingerprint, runImportTask } from './lib/transfers';
 import type { ImportTask, SourceTransferTask } from './lib/transferTypes';
 import { beginBackgroundTask, dismissBackgroundTask, restoreBackgroundTasks, useBackgroundTasks, type BackgroundHandle, type TaskView } from './lib/backgroundTasks';
@@ -36,7 +36,7 @@ import UpdateSettings from './components/UpdateSettings';
 import { startupUpdateCheck } from './lib/appUpdates';
 import StartupScreen from './components/StartupScreen';
 import { nativeAudioUrl } from './lib/nativeAudio';
-import { androidPlayer, androidQueueOptions, isAndroidPlayer, prepareAndroidQueue, type AndroidPlaybackState } from './lib/androidPlayback';
+import { androidPlayer, androidQueueOptions, isAndroidPlayer, observeAndroidPlayback, prepareAndroidQueue, savedAndroidPosition, type AndroidPlaybackState } from './lib/androidPlayback';
 import { loadSourceConfig, type SourceConfig, type SourceTrack } from './lib/onlineSource';
 import { createSourceTransfer, needsSourceSupplement, runSourceTransfer, sourceTransferLimit, sourceTransfersRunning } from './lib/sourceTransfers';
 
@@ -153,6 +153,7 @@ export default function App() {
   const lyricRef = useRef<HTMLDivElement>(null);
   const playAfterLoad = useRef(false);
   const audioSourceId = useRef('');
+  const resumePosition = useRef<{ id: string; position: number } | undefined>(undefined);
   const playIntent = useRef(0);
   const importLock = useRef(false);
   const sourceTransferring = useRef(false);
@@ -253,7 +254,6 @@ export default function App() {
   useEffect(() => {
     if (!isAndroidPlayer()) return;
     let active = true;
-    let remove: (() => void) | undefined;
     const receive = (state: AndroidPlaybackState) => {
       if (!active || librarySwitching.current) return;
       for (const id of state.cloudPlayed || []) {
@@ -261,6 +261,7 @@ export default function App() {
         else if (nativeView.current.tracks.some((track) => track.id === id)) void androidPlayer.control({ action: 'cached', text: id }).catch(() => {});
       }
       if (state.active && state.id) {
+        resumePosition.current = undefined;
         const attaching = !nativeActiveRef.current;
         nativeActiveRef.current = true; setNativeActive(true); fadeRef.current?.pause(true);
         setPlaying(state.playing === true); setPosition(state.position ?? 0); setDuration(state.duration ?? 0);
@@ -276,10 +277,8 @@ export default function App() {
         nativeError.current = state.error || '';
       } else if (nativeActiveRef.current) { nativeActiveRef.current = false; setNativeActive(false); setPlaying(false); }
     };
-    void androidPlayer.addListener('state', receive).then((listener) => { if (!active) void listener.remove(); else remove = () => void listener.remove(); });
-    const refresh = () => { if (!document.hidden) void androidPlayer.state().then(receive).catch(() => {}); };
-    refresh(); document.addEventListener('visibilitychange', refresh);
-    return () => { active = false; remove?.(); document.removeEventListener('visibilitychange', refresh); nativePreparation.current?.abort(); };
+    const stop = observeAndroidPlayback(receive);
+    return () => { active = false; stop(); nativePreparation.current?.abort(); };
   }, [notify, clearSleep]);
   const startNativeQueue = useCallback(async (identifier?: string, nextQueue?: string[]) => {
     if (!isAndroidPlayer() || nativePreparing.current || librarySwitching.current) return;
@@ -301,10 +300,12 @@ export default function App() {
       if (!selected.some((track) => track.id === id)) return;
       if (!identifier && !latest.playing) return;
       await androidPlayer.notifications();
+      const scope = await sourceLibraryScope();
+      controller.signal.throwIfAborted();
       const position = identifier ? 0 : audioRef.current?.currentTime ?? 0;
       handingOff = true;
       nativeActiveRef.current = true; setNativeActive(true); fadeRef.current?.pause(true);
-      await androidPlayer.setQueue(androidQueueOptions(selected, id, position, true, latest.mode, latest.volume, latest.fadeDuration, sleepRef.current));
+      await androidPlayer.setQueue(androidQueueOptions(selected, id, position, true, latest.mode, latest.volume, latest.fadeDuration, sleepRef.current, scope));
       notify('后台播放已就绪，可锁屏或切换应用；通知栏可控制播放。');
     } catch (error) {
       if (!controller.signal.aborted) { nativeActiveRef.current = wasNative; setNativeActive(wasNative); if (handingOff && !wasNative) beginPlayback(); notify(`后台准备未完成，仍可前台播放：${error instanceof Error ? error.message : '请检查空间'}`); }
@@ -323,24 +324,38 @@ export default function App() {
   useEffect(() => {
     let active = true;
     let painted = false;
+    let refreshed = false;
+    let selected = false;
+    const savedPosition = isAndroidPlayer() ? sourceLibraryScope().then(async (scope) => ({ scope, saved: await androidPlayer.savedPosition({ scope }) })).catch(() => undefined) : Promise.resolve(undefined);
+    const showTracks = async (stored: Track[], fromSnapshot = false) => {
+      const checkpoint = await savedPosition;
+      if (!active || (fromSnapshot && refreshed)) return;
+      setTracks(stored);
+      if (!selected && !nativeActiveRef.current && playIntent.current === 0) {
+        const restored = checkpoint && savedAndroidPosition(checkpoint.saved, checkpoint.scope, stored);
+        const lastId = restored?.id || localStorage.getItem('tingyu-current');
+        if (stored.some((track) => track.id === lastId)) {
+          selected = true;
+          resumePosition.current = restored;
+          setCurrentId(lastId!);
+          if (restored) { setPosition(restored.position); localStorage.setItem('tingyu-current', restored.id); }
+        }
+      }
+      setReady(true);
+    };
     const progress = (event: Event) => { if (!painted) setStorageProgress((event as CustomEvent<string>).detail); };
     window.addEventListener('tingyu-storage-progress', progress);
     // Paint the last known library immediately, then refresh it in the background, so opening the
     // app no longer waits for the phone folder to be walked again.
-    void loadTrackSnapshot().then((snapshot) => {
-      if (!active || !snapshot?.length) return;
+    void loadTrackSnapshot().then(async (snapshot) => {
+      if (!active || refreshed || !snapshot?.length) return;
       painted = true;
-      setTracks(snapshot);
-      const lastId = localStorage.getItem('tingyu-current');
-      if (snapshot.some((track) => track.id === lastId)) setCurrentId(lastId!);
-      setReady(true);
+      await showTracks(snapshot, true);
     }).catch(() => {});
-    getTracks().then((stored) => {
+    getTracks().then(async (stored) => {
       if (!active) return;
-      setTracks(stored);
-      const lastId = localStorage.getItem('tingyu-current');
-      if (stored.some((track) => track.id === lastId)) setCurrentId(lastId!);
-      setReady(true);
+      refreshed = true;
+      await showTracks(stored);
     }).catch(() => { if (active) { notify('无法读取本地音乐库，请检查设备存储空间或浏览器权限。'); setReady(true); } });
     return () => { active = false; clearTimeout(messageTimer.current); window.removeEventListener('tingyu-storage-progress', progress); };
   }, [notify]);
@@ -379,6 +394,7 @@ export default function App() {
 
   const playTrack = useCallback((track: Track, nextQueue?: string[]): void => {
     if (librarySwitching.current) return;
+    if (resumePosition.current?.id !== track.id) resumePosition.current = undefined;
     const intent = ++playIntent.current;
     if (track.cloud) {
       const cached = cloud.cache({ ...track, lastPlayed: Date.now() });
@@ -405,9 +421,14 @@ export default function App() {
     fadeRef.current?.reset();
     if (!audioUrl) { audio.pause(); audio.removeAttribute('src'); audio.load(); return; }
     const sameTrack = audioSourceId.current === currentId;
-    const restorePosition = sameTrack ? audio.currentTime : 0;
+    const saved = resumePosition.current?.id === currentId ? resumePosition.current : undefined;
+    const restorePosition = saved?.position ?? (sameTrack ? audio.currentTime : 0);
     const resume = sameTrack && !audio.paused;
-    const restore = () => { if (restorePosition > 0 && Number.isFinite(audio.duration)) audio.currentTime = Math.min(restorePosition, audio.duration); };
+    const restore = () => {
+      if (nativeActiveRef.current) return;
+      if (restorePosition > 0 && Number.isFinite(audio.duration)) { audio.currentTime = Math.min(restorePosition, audio.duration); setPosition(audio.currentTime); }
+      if (resumePosition.current === saved) resumePosition.current = undefined;
+    };
     audio.addEventListener('loadedmetadata', restore, { once: true });
     audioSourceId.current = currentId;
     audio.src = audioUrl;
@@ -632,7 +653,7 @@ export default function App() {
     <input ref={inputRef} className="hidden-input" type="file" multiple accept=".zip,.mp3,.flac,.wav,.m4a,.aac,.ogg,.opus,.lrc,.yrc,.txt,.jpg,.jpeg,.png,.webp" aria-label="选择音乐压缩包或歌曲文件" onChange={(event) => void handleImport(Array.from(event.target.files ?? []))} />
     <input ref={audioInputRef} className="hidden-input" type="file" multiple accept=".mp3,.flac,.wav,.m4a,.aac,.ogg,.opus" aria-label="选择单独音频文件" onChange={(event) => void handleImport(Array.from(event.target.files ?? []))} />
     <input ref={lyricInputRef} className="hidden-input" type="file" multiple accept=".lrc,.yrc,.txt" aria-label="选择单独歌词文件" onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) { if (lyricImportBusy) notify('请先完成或暂停当前歌词导入任务。'); else { setLyricFiles(files); setModal('lyrics'); } } event.target.value = ''; }} />
-    <audio ref={audioRef} preload="metadata" onPlay={() => { if (!nativeActiveRef.current) setPlaying(true); }} onPause={() => { setAudioAdvancing(false); if (!nativeActiveRef.current) setPlaying(false); }} onPlaying={() => setAudioAdvancing(true)} onWaiting={() => setAudioAdvancing(false)} onSeeking={() => setAudioAdvancing(false)} onSeeked={(event) => { setPosition(event.currentTarget.currentTime); setAudioAdvancing(!event.currentTarget.paused && event.currentTarget.readyState >= 3); }} onTimeUpdate={(event) => { if (!nativeActiveRef.current) { setPosition(event.currentTarget.currentTime); checkSleep(); } }} onLoadedMetadata={(event) => { if (nativeActiveRef.current) return; const nextDuration = event.currentTarget.duration; setDuration(Number.isFinite(nextDuration) ? nextDuration : 0); }} onEnded={() => { if (nativeActiveRef.current || sleepStopped.current) return; if (sleepRef.current && Date.now() >= sleepRef.current.deadline) { fadeRef.current?.pause(true); clearSleep(); notify('睡眠定时已结束，音乐已停止。'); return; } if (mode === 'one' && audioRef.current) { audioRef.current.currentTime = 0; beginPlayback(); } else stepTrack(1); }} onError={() => { if (!nativeActiveRef.current && audioRef.current?.getAttribute('src')) notify('音频解码失败。请尝试 MP3 / WAV 格式，或检查原文件是否完整。'); }} />
+    <audio ref={audioRef} preload="metadata" onPlay={() => { if (!nativeActiveRef.current) setPlaying(true); }} onPause={() => { setAudioAdvancing(false); if (!nativeActiveRef.current) setPlaying(false); }} onPlaying={() => setAudioAdvancing(true)} onWaiting={() => setAudioAdvancing(false)} onSeeking={() => setAudioAdvancing(false)} onSeeked={(event) => { if (nativeActiveRef.current) return; setPosition(event.currentTarget.currentTime); setAudioAdvancing(!event.currentTarget.paused && event.currentTarget.readyState >= 3); }} onTimeUpdate={(event) => { if (!nativeActiveRef.current) { setPosition(event.currentTarget.currentTime); checkSleep(); } }} onLoadedMetadata={(event) => { if (nativeActiveRef.current) return; const nextDuration = event.currentTarget.duration; setDuration(Number.isFinite(nextDuration) ? nextDuration : 0); }} onEnded={() => { if (nativeActiveRef.current || sleepStopped.current) return; if (sleepRef.current && Date.now() >= sleepRef.current.deadline) { fadeRef.current?.pause(true); clearSleep(); notify('睡眠定时已结束，音乐已停止。'); return; } if (mode === 'one' && audioRef.current) { audioRef.current.currentTime = 0; beginPlayback(); } else stepTrack(1); }} onError={() => { if (!nativeActiveRef.current && audioRef.current?.getAttribute('src')) notify('音频解码失败。请尝试 MP3 / WAV 格式，或检查原文件是否完整。'); }} />
     <StartupScreen ready={ready} />{backgroundBusy && <button className="background-task-banner" onClick={() => setModal('transfers')} aria-label="查看后台任务"><LoaderCircle size={14} className="spin" />{backgroundTasks.filter((task) => task.status === 'running').length} 个任务在后台运行 · 查看进度</button>}{forcedQueue.state.running && modal !== 'settings' && <div className="source-auto-banner" role="status">{forcedQueue.state.message}<button onClick={() => void saveAIConfig({ ...aiConfig, forced: readForcedConfig({ ...aiConfig.forced, automatic: false }) }, localStorage.getItem('tingyu-remember-key') !== 'false').catch((error) => notify(error.message))}>暂停自动逐字</button></div>}{cloud.message && cloud.caching && !backgroundBusy && <div className="cloud-cache-banner" role="status">{cloud.message}<button onClick={cloud.stop}>停止缓存</button></div>}{sourceAuto.state.running && !backgroundBusy && modal !== 'settings' && <div className="source-auto-banner" role="status">{sourceAuto.state.message}</div>}{nativeProgress && <div className="native-playback-progress" role="status">{nativeProgress}<small>准备完成后才启用锁屏连播；额外保存一份校验过的原音频，会占用相应空间。</small></div>}{sourceBusy && <div className="source-auto-banner" role="status">云端歌曲传输中，可在「传输任务」查看进度；下载最多同时进行 2 个。<button onClick={() => setModal('transfers')}>查看任务</button></div>}<aside className="sidebar">
       <a className="brand" href="#" onClick={(event) => { event.preventDefault(); setView('all'); setSearch(''); }} aria-label="弦栖霁首页"><span className="brand-symbol"><Headphones size={23} /></span><span>弦栖霁<span className="brand-en">XIANQIJI</span></span><span className="brand-dot">●</span></a>
       <div className="nav-label">你的音乐世界</div>

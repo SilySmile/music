@@ -19,6 +19,11 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
         if (getBridge() != null) {
             getBridge().getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false);
+            // This WebView is an app surface: a pinch/double tap must not strand its controls.
+            getBridge().getWebView().getSettings().setSupportZoom(false);
+            getBridge().getWebView().getSettings().setBuiltInZoomControls(false);
+            getBridge().getWebView().getSettings().setDisplayZoomControls(false);
+            getBridge().getWebView().setInitialScale(0);
             LibraryMediaHandler media = new LibraryMediaHandler(this);
             getBridge().setWebViewClient(new BridgeWebViewClient(getBridge()) {
                 @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {

@@ -3,6 +3,7 @@ import type { Track } from '../types';
 import type { PlaybackMode } from './playback';
 export type AndroidPlaybackState = { active: boolean; id?: string; playing?: boolean; position?: number; duration?: number; mode?: PlaybackMode; volume?: number; deadline?: number; finishTrack?: boolean; error?: string; cloudPlayed?: string[] };
 type QueueOptions = { tracks: { id: string; title: string; artist: string; album: string; duration: number; sourceUrl?: string; contentUri?: string }[]; id: string; position: number; playing: boolean; mode: PlaybackMode; volume: number; fade: number; deadline: number; finishTrack: boolean };
+export type AndroidSavedPosition = { scope?: string; id?: string; position?: number; duration?: number };
 interface PlaybackPlugin {
   notifications(): Promise<void>;
   cached(options: { tracks: { id: string; size: number }[] }): Promise<{ ids: string[] }>;
@@ -12,10 +13,38 @@ interface PlaybackPlugin {
   setQueue(options: QueueOptions): Promise<void>;
   control(options: { action: string; value?: number; text?: string }): Promise<void>;
   state(): Promise<AndroidPlaybackState>;
+  savedPosition(options: { scope: string }): Promise<AndroidSavedPosition>;
   addListener(event: 'state', listener: (state: AndroidPlaybackState) => void): Promise<PluginListenerHandle>;
 }
 export const androidPlayer = registerPlugin<PlaybackPlugin>('NativePlayback');
 export const isAndroidPlayer = () => Capacitor.getPlatform() === 'android';
+
+export function savedAndroidPosition(saved: AndroidSavedPosition, scope: string, tracks: Track[]) {
+  const track = tracks.find((track) => track.id === saved.id);
+  if (!track || saved.scope !== scope || !Number.isFinite(saved.position) || saved.position! < 0) return undefined;
+  return { id: track.id, position: track.duration > 0 ? Math.min(saved.position!, track.duration) : saved.position! };
+}
+
+/** Query the service when returning to the foreground, even if WebView missed broadcasts. */
+export function observeAndroidPlayback(receive: (state: AndroidPlaybackState) => void, page: Pick<Document, 'hidden' | 'addEventListener' | 'removeEventListener'> = document) {
+  let disposed = false;
+  let querying = false;
+  let remove: (() => void) | undefined;
+  const deliver = (state: AndroidPlaybackState) => { if (!disposed) receive(state); };
+  const refresh = async () => {
+    if (disposed || page.hidden || querying) return;
+    querying = true;
+    try { deliver(await androidPlayer.state()); } catch { /* A later tick retries the bridge. */ }
+    finally { querying = false; }
+  };
+  void androidPlayer.addListener('state', deliver).then((listener) => {
+    if (disposed) void listener.remove(); else remove = () => void listener.remove();
+  }).catch(() => {});
+  void refresh();
+  const timer = setInterval(() => void refresh(), 1000);
+  page.addEventListener('visibilitychange', refresh);
+  return () => { disposed = true; clearInterval(timer); remove?.(); page.removeEventListener('visibilitychange', refresh); };
+}
 
 export async function prepareAndroidQueue(tracks: Track[], onProgress: (message: string) => void, signal: AbortSignal) {
   // Songs from the phone's own folder library are played straight from their SAF document URI,
@@ -37,6 +66,6 @@ export async function prepareAndroidQueue(tracks: Track[], onProgress: (message:
     await androidPlayer.finish({ id: track.id, size: track.audio.size });
   }
 }
-export function androidQueueOptions(tracks: Track[], id: string, position: number, playing: boolean, mode: PlaybackMode, volume: number, fade: number, sleep: { deadline: number; behavior: 'immediate' | 'finish-track' } | null): QueueOptions {
-  return { tracks: tracks.map(({ id, title, artist, album, duration, cloud, contentUri }) => ({ id, title, artist, album, duration, ...(cloud?.publicRead ? { sourceUrl: cloud.streamUrl } : contentUri ? { contentUri } : {}) })), id, position, playing, mode, volume, fade, deadline: sleep?.deadline ?? 0, finishTrack: sleep?.behavior === 'finish-track' };
+export function androidQueueOptions(tracks: Track[], id: string, position: number, playing: boolean, mode: PlaybackMode, volume: number, fade: number, sleep: { deadline: number; behavior: 'immediate' | 'finish-track' } | null, libraryScope = ''): QueueOptions & { libraryScope: string } {
+  return { tracks: tracks.map(({ id, title, artist, album, duration, cloud, contentUri }) => ({ id, title, artist, album, duration, ...(cloud?.publicRead ? { sourceUrl: cloud.streamUrl } : contentUri ? { contentUri } : {}) })), id, position, playing, mode, volume, fade, deadline: sleep?.deadline ?? 0, finishTrack: sleep?.behavior === 'finish-track', libraryScope };
 }

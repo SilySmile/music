@@ -127,6 +127,7 @@ public class NativePlaybackPlugin extends Plugin {
             Intent intent = new Intent(getContext(), MusicPlaybackService.class).setAction("queue");
             intent.putExtra("id", call.getString("id", ""));
             intent.putExtra("position", call.getDouble("position", 0d));
+            intent.putExtra("libraryScope", call.getString("libraryScope", ""));
             intent.putExtra("playing", call.getBoolean("playing", true));
             intent.putExtra("mode", call.getString("mode", "list"));
             intent.putExtra("volume", call.getDouble("volume", 0.7d));
@@ -147,6 +148,14 @@ public class NativePlaybackPlugin extends Plugin {
             intent.putExtra("value", numeric);
             intent.putExtra("text", call.getString("text", ""));
             getContext().startService(intent); call.resolve();
+        } catch (Exception error) { call.reject(error.getMessage()); }
+    }
+
+    @PluginMethod
+    public void savedPosition(PluginCall call) {
+        try {
+            String text = getContext().getSharedPreferences("playback-position", Context.MODE_PRIVATE).getString("checkpoint", "{}");
+            call.resolve(new JSObject(PlaybackCheckpoint.restore(text, call.getString("scope", "")).toString()));
         } catch (Exception error) { call.reject(error.getMessage()); }
     }
 
