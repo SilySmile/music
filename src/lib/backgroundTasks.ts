@@ -3,7 +3,7 @@ import { Capacitor, type PluginListenerHandle } from '@capacitor/core';
 import { nativeSourceDownloads } from './nativeSourceDownloads';
 import type { SourceTransferTask } from './transferTypes';
 
-export type TaskView = 'settings' | 'import' | 'export' | 'online' | 'lyrics' | 'lyric-settings' | 'transfers';
+export type TaskView = 'settings' | 'import' | 'export' | 'online' | 'lyrics' | 'lyric-settings' | 'transfers' | 'providers';
 export type BackgroundStatus = 'running' | 'paused' | 'failed' | 'completed' | 'review';
 export type BackgroundTask = { id: string; title: string; message: string; status: BackgroundStatus; view: TaskView; updatedAt: number; persistent?: boolean };
 const native = nativeSourceDownloads;
@@ -32,7 +32,7 @@ export function restoreBackgroundTasks() {
     const saved = JSON.parse(localStorage.getItem(journalKey) || '[]');
     if (!Array.isArray(saved)) return;
     for (const task of saved.slice(0, 60)) {
-      if (!task || typeof task.id !== 'string' || typeof task.title !== 'string' || !['settings', 'import', 'export', 'online', 'lyrics', 'lyric-settings', 'transfers'].includes(task.view) || entries.has(task.id)) continue;
+      if (!task || typeof task.id !== 'string' || typeof task.title !== 'string' || !['settings', 'import', 'export', 'online', 'lyrics', 'lyric-settings', 'transfers', 'providers'].includes(task.view) || entries.has(task.id)) continue;
       if (!['running', 'paused', 'failed', 'completed', 'review'].includes(task.status)) continue;
       entries.set(task.id, { id: task.id, title: task.title, view: task.view, persistent: task.persistent === true, updatedAt: Number(task.updatedAt) || 0, status: task.status === 'running' || task.status === 'review' ? 'paused' : task.status, message: task.status === 'running' || task.status === 'review' ? '上次运行或未保存草稿已中断；请核对后手动继续，付费请求不会自动重发。' : String(task.message || '') });
     }

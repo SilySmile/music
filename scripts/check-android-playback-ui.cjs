@@ -28,6 +28,7 @@ async function main() {
         SecureConfig: ['loadKey'],
         AppUpdates: ['config', 'state', 'addListener', 'removeListener'],
         BackgroundTasks: ['begin', 'update', 'finish', 'sourceTasks', 'addListener', 'removeListener'],
+        MusicProviders: ['request', 'cancel'],
       };
       window.Capacitor = {
         PluginHeaders: Object.entries(methods).map(([name, list]) => ({ name, methods: list.map((name) => ({ name, rtype: name === 'addListener' ? 'callback' : 'promise' })) })),
@@ -37,6 +38,13 @@ async function main() {
           if (plugin === 'DocumentLibrary') return { storageMode: 'database', libraryId: 'fixture', trackCount: 0, path: '/private/library', previousPath: '', internalPath: '/private', legacyMigrated: true, moving: false };
           if (plugin === 'SecureConfig') return { key: '', path: '/private/config' };
           if (plugin === 'BackgroundTasks') return {};
+          if (plugin === 'MusicProviders') {
+            if (method === 'cancel') return {};
+            if (options.action === 'session') return { code: 0, req_0: { code: 0, data: {} } };
+            if (options.action === 'search') return { code: 0, req_0: { code: 0, data: { body: { item_song: [{ mid: 'android001', title: '安卓在线测试', singer: [{ name: '测试歌手' }], album: { name: '测试' }, interval: 36 }] } } } };
+            if (options.action === 'playback') return { code: 0, req_0: { code: 0, data: { sip: ['https://ws.stream.qqmusic.qq.com/'], midurlinfo: [{ purl: 'android.wav' }] } } };
+            throw Error('Unexpected provider action: ' + options.action);
+          }
           if (plugin === 'AppUpdates') return method === 'config' ? { currentVersion: '1.0.20', platform: 'android', baseUrl: '', autoCheck: false, lastChecked: 0 } : { phase: 'idle', currentVersion: '1.0.20', bytes: 0, total: 0 };
           if (plugin === 'NativePlayback') {
             if (method === 'state') return JSON.parse(localStorage.getItem('mock-native-state') || '{"active":false}');
@@ -107,6 +115,20 @@ async function main() {
     await page.reload();
     await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 3 && document.querySelector('audio').readyState >= 1);
     assert.equal(Number(await page.getByLabel('播放进度', { exact: true }).inputValue()), 0);
+    const bytes = Buffer.alloc(44 + 16000 * 36); bytes.write('RIFF'); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write('WAVEfmt ', 8); bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22); bytes.writeUInt32LE(8000, 24); bytes.writeUInt32LE(16000, 28); bytes.writeUInt16LE(2, 32); bytes.writeUInt16LE(16, 34); bytes.write('data', 36); bytes.writeUInt32LE(bytes.length - 44, 40);
+    await page.route('https://ws.stream.qqmusic.qq.com/**', (route) => route.fulfill({ contentType: 'audio/wav', body: bytes }));
+    await page.evaluate(() => localStorage.removeItem('mock-native-queue'));
+    await page.getByRole('button', { name: '在线搜索', exact: true }).click(); await page.getByLabel('搜索在线音乐').fill('测试'); await page.locator('.provider-search-form button[type=submit]').click();
+    await page.getByRole('button', { name: '在线播放 安卓在线测试', exact: true }).click();
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem('mock-native-queue') || '{}').tracks?.some((item) => item.provider === 'qq'));
+    const onlineQueue = await page.evaluate(() => JSON.parse(localStorage.getItem('mock-native-queue')));
+    assert.equal(onlineQueue.tracks[0].providerTrackId, 'android001'); assert.equal(onlineQueue.tracks[0].sourceUrl, undefined); assert.ok(!JSON.stringify(onlineQueue).includes('https://'));
+    const journal = [{ song: { provider: 'netease', id: '123456', title: '锁屏切歌记录', artist: '歌手', album: '专辑', duration: 180, capabilities: { playback: true, download: true } }, lastPlayed: Date.now() }];
+    await page.evaluate((entries) => { const state = JSON.parse(localStorage.getItem('mock-native-state')); state.providerRecent = entries; localStorage.setItem('mock-native-state', JSON.stringify(state)); document.dispatchEvent(new Event('visibilitychange')); }, journal);
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem('xianqiji-provider-recent-v2') || '[]').some((item) => item.song.id === '123456'));
+    await page.getByRole('button', { name: '最近播放', exact: true }).click(); await page.locator('.track-row').filter({ hasText: '锁屏切歌记录' }).waitFor();
+    assert.equal(await page.locator('.sidebar .nav-count').first().textContent(), '03');
+    console.log('PASS Android external playback hands provider IDs to native service without persisting media URLs; lock-screen play journal recovers Recent without library pollution');
     assert.deepEqual(errors, []);
     const normal = await browser.newPage(); await normal.goto(url);
     assert.doesNotMatch(await normal.locator('meta[name=viewport]').getAttribute('content'), /user-scalable=no/);

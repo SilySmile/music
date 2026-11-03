@@ -1,0 +1,111 @@
+// Exercise the installed app's renderer -> IPC -> native transport -> storage path.
+// Only the platform HTTP boundary is replaced with documented response fixtures.
+const { _electron } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const net = require('node:net');
+const { spawn } = require('node:child_process');
+async function main() {
+  const root = path.resolve(__dirname, '..'); const directory = path.join(root, 'test-results', `providers-${Date.now()}`); const profile = path.join(directory, 'profile');
+  await fs.mkdir(directory, { recursive: true });
+  const bytes = Buffer.alloc(44 + 16000 * 10); bytes.write('RIFF'); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write('WAVEfmt ', 8); bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22); bytes.writeUInt32LE(8000, 24); bytes.writeUInt32LE(16000, 28); bytes.writeUInt16LE(2, 32); bytes.writeUInt16LE(16, 34); bytes.write('data', 36); bytes.writeUInt32LE(bytes.length - 44, 40);
+  const serverToken = 'fixture-provider-server-writer'; const auth = path.join(directory, 'auth.json');
+  await fs.writeFile(auth, JSON.stringify({ publicRead: true, writers: [crypto.createHash('sha256').update(serverToken).digest('hex')], readers: [] }));
+  const socket = net.createServer(); await new Promise((resolve) => socket.listen(0, '127.0.0.1', resolve)); const port = socket.address().port; await new Promise((resolve) => socket.close(resolve));
+  const endpoint = `http://127.0.0.1:${port}`;
+  const backend = spawn(process.env.PYTHON_EXE || 'python', [path.join(root, 'deployment/library-server.py')], { cwd: root, env: { ...process.env, XQ_LIBRARY_DATA: path.join(directory, 'server'), XQ_LIBRARY_AUTH: auth, XQ_LIBRARY_PORT: String(port), PYTHONDONTWRITEBYTECODE: '1' }, windowsHide: true, stdio: 'ignore' });
+  let application; const errors = [];
+  async function launch() {
+    const env = { ...process.env, TINGYU_TEST: '1', TINGYU_TEST_DATA: profile }; delete env.ELECTRON_RUN_AS_NODE;
+    application = await _electron.launch({ executablePath: process.env.TINGYU_EXECUTABLE || path.join(root, 'node_modules/electron/dist/electron.exe'), args: process.env.TINGYU_EXECUTABLE ? [] : [root], env, cwd: root, timeout: 60000 });
+    await application.evaluate(({ net }, fixture) => {
+      const original = net.fetch.bind(net); const audio = Uint8Array.from(fixture.bytes);
+      globalThis.providerFixture = { mode: 'good', login: true, mediaCalls: 0, serverCalls: [] };
+      const envelope = (data, code = 0) => Response.json({ code: 0, req_0: { code, ...(data ? { data } : {}) } });
+      net.fetch = async (url, options = {}) => {
+        const target = new URL(url); const state = globalThis.providerFixture;
+        if (target.origin === 'https://providers.fixture.test') { state.serverCalls.push(target.pathname); return original(fixture.endpoint + target.pathname.slice(4) + target.search, options); }
+        if (target.hostname === 'u.y.qq.com') {
+          const request = JSON.parse(options.body); const { method, param } = request.req_0;
+          if (method === 'GetLoginUserInfo') return envelope({ code: 0, ...(String(options.headers.Cookie).includes('qm_keyst=fixture-private-session') ? { user: { uin: '123456', nick: '测试 QQ 用户' } } : {}) });
+          if (method === 'CreateQRCode') return envelope({ qrcodeID: 'fixture-qrcode', qrcode: 'https://y.qq.com/fixture-login', expiresIn: 180 });
+          if (method === 'CheckQRCode') return state.login ? envelope({ musicid: '123456', musickey: 'fixture-private-session', refresh_key: 'fixture-private-refresh' }) : envelope(null, 40000);
+          if (method === 'DoSearchForQQMusicMobile') return envelope({ body: { item_song: [{ mid: 'fixture001', title: '测试在线歌曲', singer: [{ name: '测试歌手' }], album: { name: '测试专辑' }, interval: 10 }] } });
+          if (method === 'get_song_detail_yqq') return envelope({ track_info: { pay: { pay_down: state.mode === 'paid' ? 1 : 0 } } });
+          if (method === 'CgiGetVkey') { state.mediaCalls++; return envelope({ sip: ['https://ws.stream.qqmusic.qq.com/'], midurlinfo: [{ purl: state.mode === 'denied' ? '' : state.mode === 'preview' ? 'RS02fixture.wav' : `${param.songmid[0]}.wav` }] }); }
+          throw Error('Unexpected QQ method: ' + method);
+        }
+        if (target.hostname === 'music.163.com') {
+          if (target.pathname.includes('cloudsearch')) return Response.json({ code: 200, result: { songs: [{ id: 1234567, name: '测试网易歌曲', ar: [{ name: '网易歌手' }], al: { name: '测试专辑' }, dt: 10000 }] } });
+          if (target.pathname.includes('nuser/account')) return Response.json({ code: 200, ...(String(options.headers.Cookie).includes('MUSIC_U=fixture-netease-session') ? { account: { id: 123 }, profile: { nickname: '测试网易用户' } } : {}) });
+          if (target.pathname.includes('qrcode/unikey')) return Response.json({ code: 200, unikey: 'fixture-netease-qr' });
+          if (target.pathname.includes('qrcode/client/login')) return Response.json({ code: 803 }, { headers: { 'Set-Cookie': 'MUSIC_U=fixture-netease-session; Path=/; Secure; HttpOnly' } });
+          if (target.pathname.includes('download/url')) return Response.json({ code: 200, data: { code: 200, url: 'https://m801.music.126.net/fixture.wav', type: 'wav', freeTrialInfo: state.mode === 'preview' ? { start: 0, end: 5 } : null } });
+          if (target.pathname.includes('player/url')) return Response.json({ code: 200, data: [{ code: 200, url: 'https://m801.music.126.net/fixture.wav', type: 'wav' }] });
+          throw Error('Unexpected NetEase route: ' + target.pathname);
+        }
+        if (['ws.stream.qqmusic.qq.com', 'm801.music.126.net'].includes(target.hostname)) {
+          state.mediaCalls++;
+          if (state.mode === 'slow') await new Promise((resolve, reject) => { const timer = setTimeout(resolve, 1500); options.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(Error('cancelled')); }, { once: true }); });
+          return new Response(state.mode === 'corrupt' ? '<html>not audio</html>' : audio, { headers: { 'content-type': 'audio/wav', 'content-length': String(state.mode === 'corrupt' ? 22 : audio.length) } });
+        }
+        if (target.hostname === '39.106.55.218') throw Error('No production source in tests');
+        return original(url, options);
+      };
+    }, { bytes: Array.from(bytes), endpoint });
+    const page = await application.firstWindow(); page.setDefaultTimeout(20000); page.on('pageerror', (error) => errors.push(error.message));
+    for (const host of ['ws.stream.qqmusic.qq.com', 'm801.music.126.net']) await page.route(`https://${host}/**`, (route) => route.fulfill({ status: 200, contentType: 'audio/wav', body: bytes }));
+    await page.getByRole('button', { name: '在线搜索', exact: true }).first().click(); return page;
+  }
+  const state = async (values) => application.evaluate((_electron, values) => Object.assign(globalThis.providerFixture, values), values);
+  const library = async (page) => page.evaluate(() => window.tingyuDesktop.listLibraryTracks());
+  async function search(page) { await page.getByLabel('搜索在线音乐').fill('测试'); await page.locator('.provider-search-form').getByRole('button', { name: '搜索', exact: true }).click(); await page.locator('.provider-result').waitFor(); }
+  async function download(page, title) { await page.getByRole('button', { name: `下载 ${title}`, exact: true }).click(); }
+  try {
+    for (let count = 0; count < 100; count++) { if (await fetch(endpoint + '/info').then((response) => response.ok, () => false)) break; if (backend.exitCode !== null) throw Error('Fixture server failed'); await new Promise((resolve) => setTimeout(resolve, 100)); }
+    let page = await launch();
+    await page.getByRole('button', { name: '扫码登录', exact: true }).click(); await page.getByText('测试 QQ 用户', { exact: true }).waitFor();
+    const encrypted = await fs.readFile(path.join(profile, 'config/provider-qq.bin')); assert.ok(!encrypted.includes(Buffer.from('fixture-private-session')));
+    assert.ok(!(await page.evaluate(() => JSON.stringify(localStorage))).includes('fixture-private-session'));
+    await search(page); assert.equal((await library(page)).length, 0);
+    await state({ mode: 'denied' }); await page.getByRole('button', { name: '在线播放 测试在线歌曲', exact: true }).click(); await page.locator('.provider-status').filter({ hasText: '未提供' }).waitFor();
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('xianqiji-provider-recent-v2') || '[]').length), 0);
+    await state({ mode: 'good' }); await page.getByRole('button', { name: '在线播放 测试在线歌曲', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('audio').currentTime > .1);
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem('xianqiji-provider-recent-v2') || '[]').length === 1);
+    assert.equal((await library(page)).length, 0);
+    await page.getByRole('button', { name: '最近播放', exact: true }).first().click(); await page.locator('.track-row').filter({ hasText: '测试在线歌曲' }).waitFor();
+    await page.locator('.sidebar nav button').first().click(); assert.equal(await page.locator('.track-row:visible').count(), 0);
+    console.log('PASS real playback records Recent only; search and failed playback never enter library or history');
+    await page.getByRole('button', { name: '在线搜索', exact: true }).first().click();
+    for (const [mode, expected] of [['paid', '未标记'], ['preview', '试听'], ['corrupt', '未加入音乐库']]) { await state({ mode }); await download(page, '测试在线歌曲'); await page.locator('.provider-status').filter({ hasText: expected }).waitFor(); assert.equal((await library(page)).length, 0); }
+    await state({ mode: 'slow' }); await download(page, '测试在线歌曲'); await page.getByRole('button', { name: '停止', exact: true }).click(); await page.locator('.provider-status').filter({ hasText: '已停止' }).waitFor(); assert.equal((await library(page)).length, 0);
+    await state({ mode: 'good' }); await download(page, '测试在线歌曲'); await page.locator('.provider-status').filter({ hasText: '已保存到本地' }).waitFor();
+    const saved = (await library(page))[0]; assert.equal(saved.metadata.external, undefined); assert.equal(saved.metadata.id, crypto.createHash('sha256').update(bytes).digest('hex'));
+    await page.evaluate(async (id) => { await window.tingyuDesktop.patchLibraryTrack(id, { favorite: true, lyrics: [{ time: 0, text: '保留我的歌词' }] }); }, saved.metadata.id);
+    await download(page, '测试在线歌曲'); await page.locator('.provider-status').filter({ hasText: '已保存到本地' }).waitFor();
+    const repeated = await library(page); assert.equal(repeated.length, 1); assert.equal(repeated[0].metadata.favorite, true); assert.equal(repeated[0].metadata.lyrics[0].text, '保留我的歌词');
+    await page.getByRole('button', { name: '最近播放', exact: true }).first().click(); assert.equal(await page.locator('.track-row:visible').count(), 1);
+    console.log('PASS permission, preview, invalid audio and cancel fail closed; complete download deduplicates and preserves favorite/lyrics');
+    await page.getByRole('button', { name: '在线搜索', exact: true }).first().click();
+    await page.getByRole('button', { name: '网易云音乐', exact: true }).click(); await page.getByRole('button', { name: '扫码登录', exact: true }).click(); await page.getByText('测试网易用户', { exact: true }).waitFor();
+    await search(page); await page.getByRole('button', { name: '在线播放 测试网易歌曲', exact: true }).click(); await page.waitForFunction(() => JSON.parse(localStorage.getItem('xianqiji-provider-recent-v2') || '[]').length === 2);
+    await page.evaluate(async (token) => { await window.tingyuDesktop.saveSourceConfig({ baseUrl: 'https://providers.fixture.test/api/', token, remember: true, connected: true, autoSync: false }); window.dispatchEvent(new Event('xianqiji-source-config-changed')); }, serverToken);
+    await page.getByRole('button', { name: '个人服务器', exact: true }).click(); await download(page, '测试网易歌曲'); await page.locator('.provider-status').filter({ hasText: '已保存到个人服务器' }).waitFor();
+    const serverInfo = await fetch(endpoint + '/info').then((response) => response.json()); assert.equal(serverInfo.trackCount, 1); assert.equal((await library(page)).length, 1);
+    await state({ mode: 'slow', serverCalls: [] }); await download(page, '测试网易歌曲');
+    await page.evaluate(async (token) => { await window.tingyuDesktop.saveSourceConfig({ baseUrl: 'https://other.fixture.test/api/', token, remember: true, connected: true, autoSync: false }); }, serverToken);
+    await page.locator('.provider-status').filter({ hasText: '目标已变化' }).waitFor();
+    assert.ok(!(await application.evaluate(() => globalThis.providerFixture.serverCalls)).some((route) => route.includes('/uploads')));
+    console.log('PASS NetEase playback, device QR cookie capture and real personal-server commit; target change stops wrong-server upload');
+    await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true); await page.screenshot({ path: path.join(root, 'test-results/providers-mobile.png') });
+    await application.close(); application = undefined; page = await launch(); await page.getByText('测试 QQ 用户', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '退出登录', exact: true }).click(); await page.locator('.provider-status').filter({ hasText: '已清除' }).waitFor(); await assert.rejects(fs.stat(path.join(profile, 'config/provider-qq.bin')), { code: 'ENOENT' });
+    await page.getByRole('button', { name: '网易云音乐', exact: true }).click(); await page.getByText('测试网易用户', { exact: true }).waitFor(); await page.getByRole('button', { name: '退出登录', exact: true }).click(); await page.locator('.provider-status').filter({ hasText: '已清除' }).waitFor();
+    assert.deepEqual(errors, []); console.log('PASS both accounts survive native restart and clear independently; mobile layout has no overflow; no renderer errors');
+  } catch (error) { const page = application && (await application.windows())[0]; if (page) { console.error(await page.locator('.provider-status').textContent().catch(() => '')); await page.screenshot({ path: path.join(root, 'test-results/providers-failure.png') }).catch(() => {}); } throw error; }
+  finally { await application?.close().catch(() => {}); backend.kill(); }
+}
+main().catch((error) => { console.error(error); process.exitCode = 1; });

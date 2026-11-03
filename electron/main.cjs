@@ -52,6 +52,7 @@ const shortcuts = require('./shortcuts.cjs')({ directory: dataPath, globalShortc
 } });
 const desktopPointer = require('./desktop-pointer.cjs')({ getWindow: () => desktopWindow, getState: () => desktopState, getCursor: () => screen.getCursorScreenPoint() });
 const onlineSource = require('./online-source.cjs')({ directory: dataPath, safeStorage, fetch: (...parameters) => net.fetch(...parameters) });
+const musicProviders = require('./music-providers.cjs')({ directory: dataPath, safeStorage, fetch: (...parameters) => net.fetch(...parameters) });
 
 function persistPreferences() {
   const contents = JSON.stringify({ ...desktopState, bounds: desktopBounds, layoutBounds: desktopLayoutBounds, appPreferences });
@@ -227,6 +228,12 @@ function installIpc() {
   require('./transfers.cjs')({ app, ipcMain, dialog, shell, requireWindow, getWindow: () => mainWindow, testing });
   const keyPath = path.join(app.getPath('userData'), 'ai-config.json');
   ipcMain.handle('source:get-config', (event) => { requireWindow(event, true); return onlineSource.get(); });
+  ipcMain.handle('providers:request', (event, request) => { requireWindow(event, true); return musicProviders.request(request); });
+  ipcMain.handle('providers:cancel', (event, id) => { requireWindow(event, true); musicProviders.cancel(id); });
+  ipcMain.handle('providers:download', (event, request) => { requireWindow(event, true); return musicProviders.download(request); });
+  ipcMain.handle('providers:download-state', (event, id) => { requireWindow(event, true); return musicProviders.downloadState(id); });
+  ipcMain.handle('providers:read-download', (event, token, offset, length) => { requireWindow(event, true); return musicProviders.readDownload(token, offset, length); });
+  ipcMain.handle('providers:remove-download', (event, token) => { requireWindow(event, true); return musicProviders.removeDownload(token); });
   ipcMain.handle('source:save-config', (event, value) => { requireWindow(event, true); return onlineSource.save(value); });
   ipcMain.handle('source:request', (event, request) => { requireWindow(event, true); return onlineSource.request(request); });
   const legacyKeyPath = path.join(app.getPath('userData'), 'translation-key.bin');

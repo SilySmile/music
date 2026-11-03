@@ -116,7 +116,8 @@ public class NativePlaybackPlugin extends Plugin {
             JSONArray tracks = call.getArray("tracks"); if (tracks == null || tracks.length() == 0) throw new Exception("播放队列为空");
             for (int index = 0; index < tracks.length(); index++) {
                 JSONObject track = tracks.getJSONObject(index);
-                if (track.has("sourceUrl")) CloudAudioSource.validate(track.getString("id"), track.getString("sourceUrl"));
+                if (track.has("provider")) { String provider = track.getString("provider"), providerId = track.getString("providerTrackId"); if (!ProviderProtocol.provider(provider) || !providerId.matches(provider.equals("qq") ? "[a-zA-Z0-9]{1,40}" : "[0-9]{1,20}")) throw new Exception("在线歌曲标识无效"); }
+                else if (track.has("sourceUrl")) CloudAudioSource.validate(track.getString("id"), track.getString("sourceUrl"));
                 else if (track.has("contentUri")) { if (!track.getString("contentUri").startsWith("content://")) throw new Exception("后台播放地址无效"); }
                 else if (!audio(track.getString("id"), false).isFile()) throw new Exception("后台音频尚未准备完成，请保持应用前台稍候");
             }
@@ -162,7 +163,7 @@ public class NativePlaybackPlugin extends Plugin {
     @PluginMethod
     public void state(PluginCall call) {
         getBridge().executeOnMainThread(() -> {
-            try { call.resolve(new JSObject(MusicPlaybackService.currentState().toString())); }
+            try { JSONObject state = MusicPlaybackService.currentState(); state.put("providerRecent", new JSONArray(getContext().getSharedPreferences("provider-recent", android.content.Context.MODE_PRIVATE).getString("entries", "[]"))); call.resolve(new JSObject(state.toString())); }
             catch (Exception error) { call.reject(error.getMessage()); }
         });
     }

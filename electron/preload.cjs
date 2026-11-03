@@ -8,6 +8,12 @@ function subscribe(channel, callback) {
 
 contextBridge.exposeInMainWorld('tingyuDesktop', {
   streamingAudio: true,
+  requestProvider: (request) => ipcRenderer.invoke('providers:request', request),
+  cancelProvider: (id) => ipcRenderer.invoke('providers:cancel', id),
+  downloadProvider: (request) => ipcRenderer.invoke('providers:download', request),
+  providerDownloadState: (id) => ipcRenderer.invoke('providers:download-state', id),
+  readProviderDownload: (token, offset, length) => ipcRenderer.invoke('providers:read-download', token, offset, length),
+  removeProviderDownload: (token) => ipcRenderer.invoke('providers:remove-download', token),
   updateConfig: () => ipcRenderer.invoke('updates:config'),
   saveUpdateConfig: (value) => ipcRenderer.invoke('updates:saveConfig', value),
   checkUpdate: () => ipcRenderer.invoke('updates:check'),

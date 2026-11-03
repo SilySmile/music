@@ -14,6 +14,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(BackgroundTasksPlugin.class);
         registerPlugin(SecureConfigPlugin.class);
         registerPlugin(NativePlaybackPlugin.class);
+        registerPlugin(MusicProvidersPlugin.class);
         registerPlugin(AppUpdatesPlugin.class);
         registerPlugin(DocumentLibraryPlugin.class);
         super.onCreate(savedInstanceState);

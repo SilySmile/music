@@ -105,6 +105,7 @@ async function build(runtime, commit) {
   if (!fs.existsSync(notesFile)) fs.writeFileSync(notesFile, notes, { flag: 'wx' });
   await node('node_modules/vitest/vitest.mjs', ['run']);
   await node('scripts/check-release-pipeline.cjs');
+  await run(process.execPath, ['--test', path.join(root, 'scripts/check-provider-native.cjs')]);
   await run(environment.PYTHON_EXE, ['deployment/test-library-server.py']);
   await node('scripts/sync-update-trust.cjs');
   await node('scripts/make-icon.mjs');
@@ -117,7 +118,7 @@ async function build(runtime, commit) {
   assertBuildDirectory(root, directory);
   await node('scripts/package-desktop.cjs');
   environment.TINGYU_EXECUTABLE = path.join(directory, 'win-unpacked', '弦栖霁.exe');
-  for (const script of ['smoke', 'check-playback', 'check-word-lyrics', 'check-lyric-settings', 'check-updates', 'check-online-source', 'check-auto-source', 'check-library-safety', 'check-cloud-listening', 'check-android-storage-ui', 'check-android-playback-ui', 'check-portable']) await node(`scripts/${script}.cjs`);
+  for (const script of ['smoke', 'check-playback', 'check-word-lyrics', 'check-lyric-settings', 'check-updates', 'check-online-source', 'check-auto-source', 'check-library-safety', 'check-cloud-listening', 'check-android-storage-ui', 'check-android-playback-ui', 'check-providers', 'check-portable']) await node(`scripts/${script}.cjs`);
   await node('scripts/check-lyric-settings.cjs', ['--text']);
   await node('scripts/check-background-ui.cjs');
   await node('scripts/check-online-source.cjs', ['--background']);

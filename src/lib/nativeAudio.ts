@@ -38,3 +38,9 @@ export function nativeAudio(record: StoredTrack, reader = (id: string, kind: 'au
   return blob;
 }
 export function nativeAudioUrl(blob: Blob) { return urls.get(blob); }
+/** Transient playback only. This blob cannot be mistaken for a downloaded audio file. */
+export function remoteAudio(url: string) {
+  const blob = new Blob([]);
+  urls.set(blob, url);
+  return blob;
+}

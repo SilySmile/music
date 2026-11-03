@@ -168,6 +168,7 @@ export async function getTracks(): Promise<Track[]> {
 }
 
 export async function saveTracks(tracks: Track[]) {
+  if (tracks.some((track) => track.external)) throw new Error('外部在线歌曲需完整下载校验后才能加入音乐库。');
   await ensureBackend();
   if (desktop()) { await ensureNative(); for (const track of tracks) await saveNativeTrack(track); return; }
   const transaction = (await database).transaction('tracks', 'readwrite');
@@ -176,6 +177,7 @@ export async function saveTracks(tracks: Track[]) {
 }
 
 export async function saveStreamedTrack(metadata: Omit<Track, 'audio' | 'cover'>, media: { audio: { size: number; type: string; sha256: string }; cover?: { size: number; type: string; sha256: string } }, reader: (kind: 'audio' | 'cover', offset: number, length: number) => Promise<Uint8Array>, signal: AbortSignal): Promise<Track> {
+  if (metadata.external) throw new Error('外部在线歌曲需完整下载校验后才能加入音乐库。');
   await ensureBackend(); signal.throwIfAborted();
   const bridge = desktop();
   if (bridge) await ensureNative();
@@ -210,6 +212,7 @@ export async function deleteTrack(id: string) {
 }
 
 export async function patchTrack(id: string, patch: Partial<Omit<Track, 'id'>>): Promise<Track> {
+  if (patch.external) throw new Error('不能将外部搜索结果写入音乐库。');
   await ensureBackend();
   if (desktop()) {
     await ensureNative();

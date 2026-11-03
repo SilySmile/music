@@ -1,7 +1,7 @@
 {
   "name": "tingyu-music",
   "productName": "弦栖霁",
-  "version": "1.0.21",
+  "version": "1.0.22",
   "private": true,
   "type": "module",
   "description": "弦栖霁 · 本地音乐与离线双语歌词播放器",
@@ -37,12 +37,14 @@
     "jszip": "^3.10.1",
     "lucide-react": "^0.468.0",
     "music-metadata": "^12.2.1",
+    "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.3",
     "@types/node": "^24.0.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",

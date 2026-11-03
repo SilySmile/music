@@ -53,9 +53,23 @@ public class MusicPlaybackService extends Service {
     private String libraryScope = "";
     private double pendingPosition = 0;
     private long checkpointAt = 0;
+    private int selectionRevision = 0;
+    private int rememberedProviderSelection = -1;
     private final java.util.ArrayList<Integer> shuffleBag = new java.util.ArrayList<>();
     private final LinkedHashSet<String> cloudPlayed = new LinkedHashSet<>();
     private void saveCloudPlayed() { getSharedPreferences("cloud-played", MODE_PRIVATE).edit().putString("ids", new JSONArray(cloudPlayed).toString()).apply(); }
+    private void rememberProvider() {
+        if (!track().has("provider") || rememberedProviderSelection == selectionRevision) return;
+        try {
+            JSONObject song = new JSONObject().put("provider", track().getString("provider")).put("id", track().getString("providerTrackId"))
+                .put("title", track().optString("title")).put("artist", track().optString("artist")).put("album", track().optString("album"))
+                .put("duration", track().optDouble("duration", 0)).put("capabilities", new JSONObject().put("playback", true).put("download", true));
+            JSONArray previous = new JSONArray(getSharedPreferences("provider-recent", MODE_PRIVATE).getString("entries", "[]"));
+            JSONArray next = new JSONArray().put(new JSONObject().put("song", song).put("lastPlayed", System.currentTimeMillis()));
+            for (int i = 0; i < previous.length() && next.length() < 200; i++) { JSONObject entry = previous.getJSONObject(i), old = entry.getJSONObject("song"); if (!old.optString("provider").equals(song.getString("provider")) || !old.optString("id").equals(song.getString("id"))) next.put(entry); }
+            getSharedPreferences("provider-recent", MODE_PRIVATE).edit().putString("entries", next.toString()).apply(); rememberedProviderSelection = selectionRevision;
+        } catch (Exception ignored) {}
+    }
     private final BroadcastReceiver noisyReceiver = new BroadcastReceiver() { @Override public void onReceive(Context context, Intent intent) { pause(true); } };
     private final AudioManager.OnAudioFocusChangeListener focusListener = change -> {
         if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) pause(true);
@@ -154,9 +168,9 @@ public class MusicPlaybackService extends Service {
     }
     private void play() {
         wanted = true;
-        if (!prepared || player == null) return;
+        if (!prepared || player == null) { if (!error.isEmpty() && track().has("provider")) select(track().optString("id"), pendingPosition, true); return; }
         if (!focus()) { error = "未获得音频焦点，请稍后重试"; wanted = false; refresh(); return; }
-        try { if (player.getCurrentPosition() >= player.getDuration()) player.seekTo(0); if (!playing()) gain = fade > 0 ? 0f : 1f; player.start(); ramp(1f, null); error = ""; refresh(); }
+        try { if (player.getCurrentPosition() >= player.getDuration()) player.seekTo(0); if (!playing()) gain = fade > 0 ? 0f : 1f; player.start(); rememberProvider(); ramp(1f, null); error = ""; refresh(); }
         catch (Exception failure) { error = "播放失败：" + failure.getMessage(); wanted = false; refresh(); }
     }
     private void pause(boolean immediate) {
@@ -168,9 +182,20 @@ public class MusicPlaybackService extends Service {
     private void seek(long position) { if (prepared && player != null) { player.seekTo((int) Math.max(0, Math.min(position, player.getDuration()))); broadcast(); } }
 
     private void select(String identifier, double position, boolean start) {
+        int revision = ++selectionRevision;
         for (int candidate = 0; candidate < queue.length(); candidate++) if (queue.optJSONObject(candidate).optString("id").equals(identifier)) { index = candidate; break; }
         pendingPosition = Double.isFinite(position) ? Math.max(0, position) : 0;
         fadeRevision++; if (player != null) { player.release(); player = null; } prepared = false; wanted = start; error = "";
+        if (track().has("provider")) {
+            String provider = track().optString("provider"), providerId = track().optString("providerTrackId");
+            new Thread(() -> {
+                try { String url = ProviderMedia.resolve(this, provider, providerId); handler.post(() -> { if (revision == selectionRevision && instance == this) prepareSelected(position, url); }); }
+                catch (Exception failure) { handler.post(() -> { if (revision == selectionRevision && instance == this) { error = "在线音频解析失败，请检查网络或重新登录"; wanted = false; refresh(); } }); }
+            }, "provider-playback").start(); refresh(); return;
+        }
+        prepareSelected(position, null);
+    }
+    private void prepareSelected(double position, String providerUrl) {
         try {
             String id = track().getString("id"); if (!id.matches("[a-f0-9]{64}")) throw new Exception("无效歌曲");
             player = new MediaPlayer(); player.setWakeMode(this, PowerManager.PARTIAL_WAKE_LOCK);
@@ -178,7 +203,8 @@ public class MusicPlaybackService extends Service {
             File cached = new File(getFilesDir(), "playback-audio/" + id + ".audio");
             String contentUri = track().optString("contentUri", "");
             boolean remote = !cached.isFile() && track().has("sourceUrl");
-            if (remote) player.setDataSource(CloudAudioSource.validate(id, track().getString("sourceUrl")));
+            if (providerUrl != null) player.setDataSource(providerUrl);
+            else if (remote) player.setDataSource(CloudAudioSource.validate(id, track().getString("sourceUrl")));
             else if (!cached.isFile() && contentUri.startsWith("content://")) player.setDataSource(this, android.net.Uri.parse(contentUri));
             else player.setDataSource(cached.getAbsolutePath());
             player.setOnPreparedListener(media -> { if (media != player) return; prepared = true; if (remote && cloudPlayed.size() < 5000) { cloudPlayed.add(id); saveCloudPlayed(); } seek((long) (position * 1000)); if (wanted) play(); else refresh(); });
@@ -233,6 +259,7 @@ public class MusicPlaybackService extends Service {
 
     @Override public IBinder onBind(Intent intent) { return null; }
     @Override public void onDestroy() {
+        selectionRevision++;
         savePosition(true);
         instance = null; handler.removeCallbacksAndMessages(null); if (player != null) player.release();
         unregisterReceiver(noisyReceiver);

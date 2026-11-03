@@ -20,6 +20,7 @@ export type Track = {
   addedAt: number;
   lastPlayed?: number;
   cloud?: { source: string; record: import('./lib/onlineSource').SourceTrack; streamUrl: string; publicRead: boolean };
+  external?: { song: import('./lib/providerSearch').ProviderSearchResult };
 };
 
 export type LibraryView = 'all' | 'favorites' | 'recent';
@@ -78,6 +79,12 @@ declare global {
       installUpdate(): Promise<{ installed?: boolean; portable?: boolean; testVerified?: boolean; permissionNeeded?: boolean }>;
       onUpdateState(listener: (state: import('./lib/appUpdates').UpdateState) => void): () => void;
       streamingAudio?: boolean;
+      requestProvider(request: import('./lib/providerSearch').ProviderRequest): Promise<unknown>;
+      cancelProvider(id: string): Promise<void>;
+      downloadProvider(request: { id: string; provider: 'qq' | 'netease'; url: string }): Promise<{ token: string; size: number; type: string }>;
+      providerDownloadState(id: string): Promise<{ bytes: number; total: number }>;
+      readProviderDownload(token: string, offset: number, length: number): Promise<Uint8Array>;
+      removeProviderDownload(token: string): Promise<void>;
       getLibraryInfo(): Promise<LibraryInfo>;
       getShortcuts(): Promise<ShortcutConfig>;
       saveShortcuts(value: Pick<ShortcutConfig, 'enabled' | 'bindings'>): Promise<ShortcutConfig>;
