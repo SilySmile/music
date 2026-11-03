@@ -53,11 +53,11 @@ async function main() {
           if (method === 'CgiGetVkey') { state.mediaCalls++; return envelope({ sip: ['https://ws.stream.qqmusic.qq.com/'], midurlinfo: [{ purl: state.mode === 'denied' ? '' : state.mode === 'preview' ? 'RS02fixture.wav' : `${param.songmid[0]}.wav` }] }); }
           throw Error('Unexpected QQ method: ' + method);
         }
-        if (target.hostname === 'music.163.com') {
+        if (['music.163.com', 'interfacepc.music.163.com'].includes(target.hostname)) {
           if (target.pathname.includes('cloudsearch')) return Response.json({ code: 200, result: { songs: [{ id: 1234567, name: '测试网易歌曲', ar: [{ name: '网易歌手' }], al: { name: '测试专辑' }, dt: 10000 }] } });
           if (target.pathname.includes('nuser/account')) return Response.json({ code: 200, ...(String(options.headers.Cookie).includes('MUSIC_U=fixture-netease-session') ? { account: { id: 123 }, profile: { nickname: '测试网易用户' } } : {}) });
           if (target.pathname.includes('qrcode/unikey')) return Response.json({ code: 200, unikey: 'fixture-netease-qr' });
-          if (target.pathname.includes('qrcode/client/login')) return Response.json({ code: 803 }, { headers: { 'Set-Cookie': 'MUSIC_U=fixture-netease-session; Path=/; Secure; HttpOnly' } });
+          if (target.pathname.includes('qrcode/client/login')) { state.neteaseChecks = (state.neteaseChecks || 0) + 1; if (state.neteaseDenied) return Response.json({ code: 8821, message: '请切换其他登录方式或升级新版本再试' }); if (state.neteaseChecks === 1) return Response.json({ code: 802 }); return Response.json({ code: 803 }, { headers: { 'Set-Cookie': 'MUSIC_U=fixture-netease-session; Path=/; Secure; HttpOnly' } }); }
           if (target.pathname.includes('download/url')) return Response.json({ code: 200, data: { code: 200, url: 'https://m801.music.126.net/fixture.wav', type: 'wav', freeTrialInfo: state.mode === 'preview' ? { start: 0, end: 5 } : null } });
           if (target.pathname.includes('player/url')) return Response.json({ code: 200, data: [{ code: 200, url: 'https://m801.music.126.net/fixture.wav', type: 'wav' }] });
           throw Error('Unexpected NetEase route: ' + target.pathname);
@@ -106,7 +106,11 @@ async function main() {
     await page.getByRole('button', { name: '最近播放', exact: true }).first().click(); assert.equal(await page.locator('.track-row:visible').count(), 1);
     console.log('PASS permission, preview, invalid audio and cancel fail closed; complete download deduplicates and preserves favorite/lyrics');
     await page.getByRole('button', { name: '在线搜索', exact: true }).first().click();
-    await page.getByRole('button', { name: '网易云音乐', exact: true }).click(); await page.getByRole('button', { name: '扫码登录', exact: true }).click(); await page.getByText('测试网易用户', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '网易云音乐', exact: true }).click();
+    await state({ neteaseDenied: true }); await page.getByRole('button', { name: '扫码登录', exact: true }).click();
+    await page.locator('.provider-status').filter({ hasText: '8821' }).waitFor(); assert.equal(await page.locator('.provider-login-code').count(), 0);
+    await state({ neteaseDenied: false, neteaseChecks: 0 }); await page.getByRole('button', { name: '扫码登录', exact: true }).click();
+    await page.locator('.provider-status').filter({ hasText: '已检测到扫码' }).waitFor(); await page.getByText('测试网易用户', { exact: true }).waitFor();
     await search(page); await page.getByRole('button', { name: '在线播放 测试网易歌曲', exact: true }).click(); await page.waitForFunction(() => JSON.parse(localStorage.getItem('xianqiji-provider-recent-v2') || '[]').length === 2);
     await page.evaluate(async (token) => { await window.tingyuDesktop.saveSourceConfig({ baseUrl: 'https://providers.fixture.test/api/', token, remember: true, connected: true, autoSync: false }); window.dispatchEvent(new Event('xianqiji-source-config-changed')); }, serverToken);
     await page.getByRole('button', { name: '个人服务器', exact: true }).click(); await download(page, '测试网易歌曲'); await page.locator('.provider-status').filter({ hasText: '已保存到个人服务器' }).waitFor();

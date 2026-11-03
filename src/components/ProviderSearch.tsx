@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import '../providerStyles.css';
 import { Download, LoaderCircle, LogIn, Music2, Play, RefreshCw, Search, ShieldCheck, Square } from 'lucide-react';
-import { beginProviderLogin, checkProviderLogin, providerLabel, providerRequest, providerSession, providersAvailable, resolveProviderMedia, searchProvider, type MusicProvider, type ProviderLogin, type ProviderSearchResult, type ProviderSession } from '../lib/providerSearch';
+import { beginProviderLogin, checkProviderLogin, ProviderLoginError, providerLabel, providerRequest, providerSession, providersAvailable, resolveProviderMedia, searchProvider, type MusicProvider, type ProviderLogin, type ProviderSearchResult, type ProviderSession } from '../lib/providerSearch';
 import { downloadProviderAudio, type ProviderSaveTarget } from '../lib/providerDownload';
 import { sourceLibraryScope } from '../lib/storage';
 import { loadSourceConfig } from '../lib/onlineSource';
@@ -53,7 +53,7 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
         }
         if (next.status === 'expired') { setLogin(next); setStatus('登录二维码已过期，请重新生成。'); return; }
         if (next.status === 'confirmed') { setLogin((previous) => previous && previous.status !== 'confirmed' ? { ...previous, status: 'confirmed' } : previous); setStatus('已检测到扫码，请在官方应用中确认登录，正在等待账号授权。'); }
-      } catch (error) { if (abort.signal.aborted) return; setStatus(errorText(error)); }
+      } catch (error) { if (abort.signal.aborted) return; setStatus(errorText(error)); if (error instanceof ProviderLoginError) { setLogin((previous) => previous && { ...previous, status: 'failed' }); return; } }
       if (!abort.signal.aborted) timer = setTimeout(() => void poll(), 1000);
     };
     timer = setTimeout(() => void poll(), 800);

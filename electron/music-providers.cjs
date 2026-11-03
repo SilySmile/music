@@ -13,6 +13,13 @@ function weapi(value, secret = crypto.randomBytes(16).toString('hex').slice(0, 1
   const input = Buffer.alloc(128); Buffer.from([...secret].reverse().join('')).copy(input, 128 - 16);
   return new URLSearchParams({ params: aes(aes(JSON.stringify(value), '0CoJUm6Qyw8W8jud'), secret), encSecKey: crypto.publicEncrypt({ key: publicKey, padding: crypto.constants.RSA_NO_PADDING }, input).toString('hex') }).toString();
 }
+function eapi(path, value) {
+  const text = JSON.stringify(value);
+  const digest = crypto.createHash('md5').update(`nobody${path}use${text}md5forencrypt`).digest('hex');
+  const cipher = crypto.createCipheriv('aes-128-ecb', 'e82ckenh8dichen8', null);
+  const params = Buffer.concat([cipher.update(`${path}-36cd479b6b5-${text}-36cd479b6b5-${digest}`, 'utf8'), cipher.final()]).toString('hex').toUpperCase();
+  return new URLSearchParams({ params }).toString();
+}
 function buildRequest(request, cookie) {
   const { provider, action, data = {} } = request || {};
   if (!['qq', 'netease'].includes(provider)) throw Error('无效音乐平台。');
@@ -33,6 +40,11 @@ function buildRequest(request, cookie) {
       logout: ['/api/logout', {}],
     };
     const route = routes[action]; if (!route) throw Error('不支持此音乐操作。');
+    if (['login-create', 'login-check'].includes(action)) {
+      const header = { os: 'pc', appver: '3.1.17.204416', osver: 'Microsoft-Windows-10-Professional-build-19045-64bit', channel: 'netease', deviceId: cookie.deviceId || '', __csrf: cookie.__csrf || '', requestId: `${Date.now()}_${crypto.randomInt(1000).toString().padStart(4, '0')}` };
+      for (const key of ['MUSIC_U', 'MUSIC_A', 'NMTID']) if (cookie[key]) header[key] = cookie[key];
+      return { url: `https://interfacepc.music.163.com${route[0].replace('/api/', '/eapi/')}`, body: eapi(route[0], { ...route[1], e_r: false, header }), headers: { 'Content-Type': 'application/x-www-form-urlencoded', Referer: 'https://music.163.com/', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 Chrome/91.0.4472.164 NeteaseMusicDesktop/3.1.29.205117', Cookie: Object.entries(header).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('; ') } };
+    }
     return { url: `https://music.163.com${route[0].replace('/api/', '/weapi/')}?csrf_token=${encodeURIComponent(cookie.__csrf || '')}`, body: weapi({ ...route[1], csrf_token: cookie.__csrf || '' }), headers: { 'Content-Type': 'application/x-www-form-urlencoded', Referer: 'https://music.163.com/', 'User-Agent': ua } };
   }
   const guid = cookie.guid || '1000000001'; const uin = cookie.uin || cookie.qqmusic_uin || '0'; const key = cookie.qm_keyst || cookie.qqmusic_key || '';
@@ -117,6 +129,10 @@ module.exports = function createProviders({ directory, safeStorage, fetch }) {
       }
       const revision = revisions[provider]; const cookie = await read(provider);
       if (provider === 'qq' && !cookie.guid) cookie.guid = deviceGuid;
+      if (provider === 'netease' && !cookie.deviceId) {
+        cookie.deviceId = deviceGuid;
+        await serial(provider, async () => { if (revision !== revisions[provider]) throw Error('账号已退出。'); await save(provider, { ...await read(provider), deviceId: cookie.deviceId }); });
+      }
       if (provider === 'qq' && action === 'login-check' && qrSessions.has(request.data?.key)) {
         const session = qrSessions.get(request.data.key);
         if (session.state.error) throw Error(session.state.error);
@@ -124,7 +140,7 @@ module.exports = function createProviders({ directory, safeStorage, fetch }) {
       }
       const built = buildRequest(request, cookie); const controller = new AbortController(); controllers.set(request.id, controller);
       try {
-        const response = await fetch(built.url, { method: 'POST', headers: { ...built.headers, Cookie: Object.entries(cookie).map(([key, value]) => `${key}=${value}`).join('; ') }, body: built.body, credentials: 'omit', redirect: 'error', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]) });
+        const response = await fetch(built.url, { method: 'POST', headers: { Cookie: Object.entries(cookie).map(([key, value]) => `${key}=${value}`).join('; '), ...built.headers }, body: built.body, credentials: 'omit', redirect: 'error', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]) });
         if (!response.ok) throw Error(`音乐平台响应失败（HTTP ${response.status}）。`);
         const chunks = []; let size = 0;
         for await (const chunk of response.body) { size += chunk.length; if (size > 4 * 1024 * 1024) { controller.abort(); throw Error('音乐平台响应过大。'); } chunks.push(Buffer.from(chunk)); }
@@ -162,6 +178,7 @@ module.exports = function createProviders({ directory, safeStorage, fetch }) {
 };
 module.exports.buildRequest = buildRequest;
 module.exports.weapi = weapi;
+module.exports.eapi = eapi;
 module.exports.captureLogin = captureLogin;
 module.exports.redact = redact;
 module.exports.mediaUrl = mediaUrl;

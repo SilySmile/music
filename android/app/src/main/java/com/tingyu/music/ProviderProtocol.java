@@ -14,10 +14,13 @@ import org.json.JSONObject;
 public final class ProviderProtocol {
     private static final String MODULUS = "e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b725152b3ab17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312ecbda92557c93870114af6c9d05c4f7f0c3685b7a46bee255932575cce10b424d813cfe4875d3e82047b97ddef52741d546b8e289dc6935b3ece0462db0a22b8e7";
     public static final class Request {
-        public final String url, body, referer, userAgent;
+        public final String url, body, referer, userAgent, cookieHeader;
         public Request(String url, String body, String referer, boolean mobile) {
+            this(url, body, referer, mobile ? "QQMusic 20090008(android 14)" : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36", null);
+        }
+        public Request(String url, String body, String referer, String userAgent, String cookieHeader) {
             this.url = url; this.body = body; this.referer = referer;
-            this.userAgent = mobile ? "QQMusic 20090008(android 14)" : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36";
+            this.userAgent = userAgent; this.cookieHeader = cookieHeader;
         }
     }
     public static boolean provider(String value) { return "qq".equals(value) || "netease".equals(value); }
@@ -35,6 +38,14 @@ public final class ProviderProtocol {
         String rsa = new BigInteger(1, new StringBuilder(secret).reverse().toString().getBytes(StandardCharsets.UTF_8)).modPow(BigInteger.valueOf(65537), new BigInteger(MODULUS, 16)).toString(16);
         StringBuilder padded = new StringBuilder(); for (int i = rsa.length(); i < 256; i++) padded.append('0'); padded.append(rsa);
         return "params=" + URLEncoder.encode(aes(aes(value.toString(), "0CoJUm6Qyw8W8jud"), secret), "UTF-8") + "&encSecKey=" + padded;
+    }
+    static String eapi(String path, JSONObject value) throws Exception {
+        String text = value.toString();
+        byte[] hash = java.security.MessageDigest.getInstance("MD5").digest(("nobody" + path + "use" + text + "md5forencrypt").getBytes(StandardCharsets.UTF_8));
+        StringBuilder digest = new StringBuilder(); for (byte item : hash) digest.append(String.format("%02x", item & 255));
+        Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding"); cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec("e82ckenh8dichen8".getBytes(StandardCharsets.UTF_8), "AES"));
+        byte[] encrypted = cipher.doFinal((path + "-36cd479b6b5-" + text + "-36cd479b6b5-" + digest).getBytes(StandardCharsets.UTF_8));
+        StringBuilder params = new StringBuilder("params="); for (byte item : encrypted) params.append(String.format("%02X", item & 255)); return params.toString();
     }
     public static Request build(String provider, String action, JSONObject data, JSONObject cookie) throws Exception {
         if (!provider(provider)) throw new Exception("无效音乐平台");
@@ -55,6 +66,13 @@ public final class ProviderProtocol {
                 case "download": path = "/song/enhance/download/url"; payload = object("id", id, "br", 128000); break;
                 case "logout": path = "/logout"; payload = object(); break;
                 default: throw new Exception("不支持此音乐操作");
+            }
+            if (action.equals("login-create") || action.equals("login-check")) {
+                JSONObject header = object("os", "pc", "appver", "3.1.17.204416", "osver", "Microsoft-Windows-10-Professional-build-19045-64bit", "channel", "netease", "deviceId", cookie.optString("deviceId"), "__csrf", cookie.optString("__csrf"), "requestId", System.currentTimeMillis() + "_" + String.format(java.util.Locale.ROOT, "%04d", new SecureRandom().nextInt(1000)));
+                for (String key : new String[] { "MUSIC_U", "MUSIC_A", "NMTID" }) if (cookie.has(key)) header.put(key, cookie.getString(key));
+                StringBuilder cookies = new StringBuilder(); for (java.util.Iterator<String> keys = header.keys(); keys.hasNext();) { String key = keys.next(); if (cookies.length() > 0) cookies.append("; "); cookies.append(key).append('=').append(URLEncoder.encode(header.getString(key), "UTF-8").replace("+", "%20")); }
+                payload.put("e_r", false); payload.put("header", header);
+                return new Request("https://interfacepc.music.163.com/eapi" + path, eapi("/api" + path, payload), "https://music.163.com/", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 Chrome/91.0.4472.164 NeteaseMusicDesktop/3.1.29.205117", cookies.toString());
             }
             payload.put("csrf_token", cookie.optString("__csrf", ""));
             byte[] random = new byte[8]; new SecureRandom().nextBytes(random); StringBuilder secret = new StringBuilder(); for (byte item : random) secret.append(String.format("%02x", item));

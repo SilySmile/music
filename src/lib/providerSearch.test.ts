@@ -2,6 +2,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { checkProviderLogin, parseProviderMedia, parseProviderSearch, providerIdentifier, providerRequest, providerSession, validateProviderAudioUrl } from './providerSearch';
 afterEach(() => vi.unstubAllGlobals());
 describe('device-local music providers', () => {
+  it('tracks NetEase scan, authorization and expiration and rejects terminal platform errors', async () => {
+    let code = 801;
+    vi.stubGlobal('window', { tingyuDesktop: { requestProvider: async () => ({ code, message: '平台错误' }) } });
+    const previous = { status: 'waiting' as const, key: 'fixture', expiresAt: Date.now() + 60000 };
+    expect((await checkProviderLogin('netease', previous)).status).toBe('waiting');
+    code = 802; expect((await checkProviderLogin('netease', previous)).status).toBe('confirmed');
+    code = 803; expect((await checkProviderLogin('netease', previous)).status).toBe('logged-in');
+    code = 800; expect((await checkProviderLogin('netease', previous)).status).toBe('expired');
+    code = 8821; await expect(checkProviderLogin('netease', previous)).rejects.toThrow(/8821/);
+    code = 999; await expect(checkProviderLogin('netease', previous)).rejects.toThrow(/999/);
+  });
   it('recognizes actual QQ info/retCode account responses and the anonymous 1000 response', async () => {
     let response: unknown = { code: 0, req_0: { code: 0, data: { info: { retCode: 0, nick: '已确认账号' } } } };
     vi.stubGlobal('window', { tingyuDesktop: { requestProvider: async () => response } });

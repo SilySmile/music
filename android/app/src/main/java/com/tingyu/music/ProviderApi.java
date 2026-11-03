@@ -23,6 +23,7 @@ public final class ProviderApi {
         if (provider.equals("qq") && action.equals("login-check")) { JSONObject state = ProviderQr.state(data.optString("key")); if (state != null) return state; }
         int revision = revisions.getOrDefault(provider, 0); JSONObject cookie = ProviderAccounts.read(context, provider);
         if (provider.equals("qq") && !cookie.has("guid")) cookie.put("guid", DEVICE_GUID);
+        if (provider.equals("netease") && !cookie.has("deviceId")) { synchronized (ProviderAccounts.class) { if (revision != revisions.getOrDefault(provider, 0)) throw new Exception("账号已退出"); JSONObject latest = ProviderAccounts.read(context, provider); if (!latest.has("deviceId")) latest.put("deviceId", DEVICE_GUID); ProviderAccounts.save(context, provider, latest); cookie.put("deviceId", latest.getString("deviceId")); } }
         ProviderProtocol.Request built = ProviderProtocol.build(provider, action, data, cookie);
         JSONObject result = perform(context, provider, action, built, id, revision, cookie);
         if (provider.equals("qq") && action.equals("login-create") && result.optInt("code", -1) == 0 && result.optJSONObject("req_0") != null && result.getJSONObject("req_0").optInt("code", -1) == 0) {
@@ -48,6 +49,7 @@ public final class ProviderApi {
             connection.setRequestProperty("Content-Type", provider.equals("qq") ? "application/json" : "application/x-www-form-urlencoded"); connection.setRequestProperty("Referer", built.referer); connection.setRequestProperty("User-Agent", built.userAgent);
             if (provider.equals("qq")) connection.setRequestProperty("Origin", "https://y.qq.com");
             StringBuilder cookies = new StringBuilder(); for (Iterator<String> keys = cookie.keys(); keys.hasNext();) { String key = keys.next(); if (cookies.length() > 0) cookies.append("; "); cookies.append(key).append('=').append(cookie.getString(key)); } if (cookies.length() > 0) connection.setRequestProperty("Cookie", cookies.toString());
+            if (built.cookieHeader != null) connection.setRequestProperty("Cookie", built.cookieHeader);
             byte[] bytes = built.body.getBytes(StandardCharsets.UTF_8); connection.setFixedLengthStreamingMode(bytes.length); try (java.io.OutputStream output = connection.getOutputStream()) { output.write(bytes); }
             int status = connection.getResponseCode(); if (status != 200) throw new Exception("音乐平台响应失败（HTTP " + status + "）");
             JSONObject response;

@@ -3,7 +3,8 @@ import QRCode from 'qrcode';
 export type MusicProvider = 'qq' | 'netease';
 export type ProviderSearchResult = { id: string; provider: MusicProvider; title: string; artist: string; album: string; duration: number; coverUrl?: string; capabilities: { playback: boolean; download: boolean } };
 export type ProviderSession = { loggedIn: boolean; accountName?: string };
-export type ProviderLogin = { status: 'waiting' | 'confirmed' | 'expired' | 'logged-in'; key: string; qrImageUrl?: string; expiresAt: number };
+export type ProviderLogin = { status: 'waiting' | 'confirmed' | 'expired' | 'failed' | 'logged-in'; key: string; qrImageUrl?: string; expiresAt: number };
+export class ProviderLoginError extends Error {}
 export type ProviderPlayback = { url: string; expiresAt: number; previewOnly: boolean; format: string };
 export type ProviderAction = 'session' | 'search' | 'login-create' | 'login-check' | 'detail' | 'playback' | 'download' | 'logout';
 export type ProviderRequest = { id: string; provider: MusicProvider; action: ProviderAction; data: Record<string, unknown> };
@@ -67,11 +68,12 @@ export async function beginProviderLogin(provider: MusicProvider, signal?: Abort
   const qr = provider === 'qq' ? response.qrcode : `https://music.163.com/login?codekey=${encodeURIComponent(key)}`;
   if (typeof qr !== 'string' || qr.length > 100000) throw Error('平台未返回有效的登录二维码。');
   const qrImageUrl = /^data:image\/png;base64,[a-zA-Z0-9+/=]+$/.test(qr) ? qr : await QRCode.toDataURL(qr, { width: 240, margin: 2 });
-  return { status: 'waiting', key, qrImageUrl, expiresAt: Date.now() + Math.min(Number(response.expiresIn) || 180, 900) * 1000 };
+  return { status: 'waiting', key, qrImageUrl, expiresAt: Date.now() + Math.min(Number(response.expiresIn) || (provider === 'netease' ? 900 : 180), 900) * 1000 };
 }
 export async function checkProviderLogin(provider: MusicProvider, previous: ProviderLogin, signal?: AbortSignal): Promise<ProviderLogin> {
   if (Date.now() >= previous.expiresAt) return { ...previous, status: 'expired' };
   const response = await providerRequest(provider, 'login-check', { key: previous.key }, signal); const code = provider === 'qq' ? response.code ?? response.ret : response.code;
+  if (provider === 'netease' && ![800, 801, 802, 803].includes(code)) throw new ProviderLoginError(code === 8821 ? '网易云拒绝了本次登录方式（8821）。请更新官方 App 后重新扫码；仍失败时请稍后重试。' : `网易云登录未完成（${typeof code === 'number' ? code : '状态异常'}），请重新生成二维码。`);
   return { ...previous, status: provider === 'qq' ? code === 0 ? 'logged-in' : code === 40002 ? 'expired' : code === 40001 ? 'confirmed' : 'waiting' : code === 803 ? 'logged-in' : code === 800 ? 'expired' : code === 802 ? 'confirmed' : 'waiting' };
 }
 export function validateProviderAudioUrl(provider: MusicProvider, value: string) {
