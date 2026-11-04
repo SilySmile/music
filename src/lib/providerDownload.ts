@@ -80,7 +80,7 @@ export async function readProviderDownload(response: Response, signal: AbortSign
 }
 
 /** Reject an HTML error page, truncated audio, and a preview mislabeled as a whole song. */
-export async function prepareProviderTrack(blob: Blob, song: ProviderSearchResult, signal: AbortSignal): Promise<Track> {
+export async function prepareProviderTrack(blob: Blob, song: ProviderSearchResult, signal: AbortSignal, lyrics: Track['lyrics'] = []): Promise<Track> {
   signal.throwIfAborted();
   if (!blob.size || blob.size > providerDownloadLimit) throw new Error('音频为空或超过单首下载上限。');
   await validateContainerBounds(blob); signal.throwIfAborted();
@@ -93,5 +93,6 @@ export async function prepareProviderTrack(blob: Blob, song: ProviderSearchResul
   const id = Array.from(hasher.digest(), (value) => value.toString(16).padStart(2, '0')).join('');
   const format = metadata.format.container?.toUpperCase() || 'AUDIO';
   signal.throwIfAborted();
-  return { id, title: song.title, artist: song.artist, album: song.album, duration, format, audio: blob, lyrics: [], favorite: false, addedAt: Date.now() };
+  if (!['MP3', 'MPEG'].includes(format)) throw new Error(`下载内容为 ${format}，不是普通 MP3；未加入音乐库，也未转换受保护文件。`);
+  return { id, title: song.title, artist: song.artist, album: song.album, duration, format: 'MP3', audio: blob, lyrics, lyricsSource: lyrics.length ? 'LRCLIB' : undefined, favorite: false, addedAt: Date.now() };
 }

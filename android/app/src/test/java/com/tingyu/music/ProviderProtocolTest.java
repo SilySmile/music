@@ -20,6 +20,11 @@ public class ProviderProtocolTest {
         ProviderProtocol.Request qq = ProviderProtocol.build("qq", "search", new JSONObject().put("query", "歌曲"), new JSONObject());
         assertEquals("https://u.y.qq.com/cgi-bin/musicu.fcg", qq.url);
         assertEquals("歌曲", new JSONObject(qq.body).getJSONObject("req_0").getJSONObject("param").getString("query"));
+        ProviderProtocol.Request qqDownload = ProviderProtocol.build("qq", "download", new JSONObject().put("id", "songmid"), new JSONObject());
+        JSONObject qqDownloadBody = new JSONObject(qqDownload.body).getJSONObject("req_0");
+        assertEquals("UrlGetVkey", qqDownloadBody.getString("method")); assertEquals("M500songmidsongmid.mp3", qqDownloadBody.getJSONObject("param").getJSONArray("filename").getString(0));
+        ProviderProtocol.Request neteaseDownload = ProviderProtocol.build("netease", "download", new JSONObject().put("id", "123"), new JSONObject());
+        assertEquals("https://music.163.com/weapi/song/enhance/download/url?csrf_token=", neteaseDownload.url);
         try { ProviderProtocol.build("qq", "delete-playlist", new JSONObject(), new JSONObject()); fail(); } catch (Exception expected) { assertNotNull(expected.getMessage()); }
         try { ProviderProtocol.build("netease", "playback", new JSONObject().put("id", "../cookie"), new JSONObject()); fail(); } catch (Exception expected) { assertNotNull(expected.getMessage()); }
     }

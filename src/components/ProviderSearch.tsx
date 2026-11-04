@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import '../providerStyles.css';
-import { Download, LoaderCircle, LogIn, Music2, Play, RefreshCw, Search, ShieldCheck, Square } from 'lucide-react';
-import { beginProviderLogin, checkProviderLogin, ProviderLoginError, providerLabel, providerRequest, providerSession, providersAvailable, resolveProviderMedia, searchProvider, type MusicProvider, type ProviderLogin, type ProviderSearchResult, type ProviderSession } from '../lib/providerSearch';
+import { Captions, Download, LoaderCircle, LogIn, Music2, Play, RefreshCw, Search, ShieldCheck, Square } from 'lucide-react';
+import { beginProviderLogin, checkProviderLogin, findProviderLyrics, ProviderLoginError, providerLabel, providerRequest, providerSession, providersAvailable, resolveProviderMedia, searchProvider, type MusicProvider, type ProviderLogin, type ProviderSearchResult, type ProviderSession } from '../lib/providerSearch';
 import { downloadProviderAudio, type ProviderSaveTarget } from '../lib/providerDownload';
+import type { LyricLine } from '../types';
 import { sourceLibraryScope } from '../lib/storage';
 import { loadSourceConfig } from '../lib/onlineSource';
 import { beginBackgroundTask } from '../lib/backgroundTasks';
@@ -10,8 +11,8 @@ import { beginBackgroundTask } from '../lib/backgroundTasks';
 const errorText = (error: unknown) => error instanceof Error ? error.message : '音乐平台暂不可用，请稍后重试。';
 export default function ProviderSearch({ active, onDownloaded, onPlay }: {
   active: boolean;
-  onDownloaded(blob: Blob, song: ProviderSearchResult, target: ProviderSaveTarget, signal: AbortSignal): Promise<void>;
-  onPlay(song: ProviderSearchResult): Promise<void>;
+  onDownloaded(blob: Blob, song: ProviderSearchResult, target: ProviderSaveTarget, signal: AbortSignal, lyrics: LyricLine[]): Promise<void>;
+  onPlay(song: ProviderSearchResult, lyrics: LyricLine[]): Promise<void>;
 }) {
   const [provider, setProvider] = useState<MusicProvider>('qq');
   const [session, setSession] = useState<ProviderSession>();
@@ -24,6 +25,8 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
   const [destination, setDestination] = useState<'local' | 'server'>('local');
   const [busy, setBusy] = useState('');
   const [status, setStatus] = useState('');
+  const [lyricsPreview, setLyricsPreview] = useState<{ id: string; lines: LyricLine[] }>();
+  const lyricsCache = useRef(new Map<string, LyricLine[]>());
   const controller = useRef<AbortController | undefined>(undefined);
   const locked = useRef(false);
   const generation = useRef(0);
@@ -32,7 +35,7 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
   useEffect(() => { if (active) setOpened(true); }, [active]);
   useEffect(() => {
     const revision = ++generation.current, abort = new AbortController();
-    setSession(undefined); setLogin(undefined); setResults([]); setPage(0); setMore(false); setSubmitted(''); setStatus('');
+    setSession(undefined); setLogin(undefined); setResults([]); setPage(0); setMore(false); setSubmitted(''); setStatus(''); setLyricsPreview(undefined);
     if (available && opened) void providerSession(provider, abort.signal).then((value) => { if (revision === generation.current) setSession(value); }).catch((error) => { if (!abort.signal.aborted && revision === generation.current) setStatus(errorText(error)); });
     return () => { abort.abort(); };
   }, [provider, available, opened]);
@@ -77,6 +80,24 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
       setStatus(response.results.length ? '结果按平台展示；实际可播放和可下载范围取决于歌曲及账号权限。' : '没有找到歌曲，换个关键词试试。');
     });
   }
+  async function getLyrics(song: ProviderSearchResult, signal?: AbortSignal) {
+    const key = `${song.provider}:${song.id}`;
+    const cached = lyricsCache.current.get(key);
+    if (cached) return cached;
+    const candidates = await findProviderLyrics(song, signal);
+    const lines = candidates[0]?.lyrics || [];
+    lyricsCache.current.set(key, lines);
+    return lines;
+  }
+  async function showLyrics(song: ProviderSearchResult) {
+    if (lyricsPreview?.id === song.id) { setLyricsPreview(undefined); return; }
+    await run(`lyrics:${song.id}`, async (signal) => {
+      setStatus(`正在查找《${song.title}》的歌词…`);
+      const lines = await getLyrics(song, signal);
+      setLyricsPreview({ id: song.id, lines });
+      setStatus(lines.length ? `已找到 ${lines.length} 行歌词；匹配来源 LRCLIB。` : '暂未找到匹配歌词，可尝试更正歌名或歌手后重搜。');
+    });
+  }
   async function download(song: ProviderSearchResult) {
     await run(`download:${song.id}`, async (signal) => {
       const scope = await sourceLibraryScope();
@@ -86,11 +107,13 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
       const abort = controller.current!; let job: Awaited<ReturnType<typeof beginBackgroundTask>> | undefined; let complete = false;
       try {
         job = await beginBackgroundTask({ id: `provider:${provider}:${song.id}`, title: `下载 · ${song.title}`, view: 'providers', controller: abort });
+        let lyrics: LyricLine[] = [];
+        try { lyrics = await getLyrics(song, signal); } catch { signal.throwIfAborted(); }
         setStatus('正在核对平台下载权限…');
         const media = await resolveProviderMedia(song, true, signal);
         const blob = await downloadProviderAudio(song, media.url, signal, (bytes) => { const message = `下载 ${song.title} · ${(bytes / 1024 / 1024).toFixed(1)} MB`; setStatus(message); job?.progress(message); });
         setStatus('正在校验完整音频并保存…'); job.progress('校验时长、音频格式与 SHA-256，随后入库');
-        await onDownloaded(blob, song, target, signal); complete = true;
+        await onDownloaded(blob, song, target, signal, lyrics); complete = true;
         setStatus(target.destination === 'local' ? '已保存到本地，现在可在我的音乐中查看。' : '已保存到个人服务器，正在刷新我的音乐。');
       } finally { await job?.finish(complete ? 'completed' : signal.aborted ? 'paused' : 'failed', complete ? '完整音频已校验并保存。' : '未完成入库；请在在线搜索中重新下载。'); }
     });
@@ -106,7 +129,7 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
     <div className="provider-download-target"><span>下载到</span><div className="provider-tabs" role="group" aria-label="下载保存位置"><button disabled={!!busy} aria-pressed={destination === 'local'} onClick={() => setDestination('local')}>本地音乐库</button><button disabled={!!busy} aria-pressed={destination === 'server'} onClick={() => setDestination('server')}>个人服务器</button></div></div>
     <p className="provider-status" role="status">{!available ? '请在 Windows 或安卓安装版中使用在线音源。' : status || '可以直接搜索；登录后按你的账号权限播放与下载。'}{busy && !busy.startsWith('play:') && <button className="text-button" onClick={() => controller.current?.abort()}><Square size={12} />停止</button>}</p>
     <div className="provider-results">{results.length > 0 && <div className="provider-results-heading"><strong>“{submitted}”</strong><span>{results.length} 首 · {providerLabel(provider)}</span></div>}
-      {results.map((song) => <article className="provider-result" key={song.id}><div className="provider-result-cover">{song.coverUrl ? <img src={song.coverUrl} alt="" loading="lazy" /> : <Music2 size={23} />}</div><div className="provider-result-info"><strong>{song.title}</strong><span>{song.artist} · {song.album || '未知专辑'}</span><small>{providerLabel(song.provider)} · {Math.floor(song.duration / 60)}:{Math.floor(song.duration % 60).toString().padStart(2, '0')}</small></div><div className="provider-result-actions"><button className="icon-button" disabled={!!busy || !song.capabilities.playback} aria-label={`在线播放 ${song.title}`} onClick={() => void run(`play:${song.id}`, async () => { setStatus('正在解析播放地址…'); await onPlay(song); setStatus('已交给底部播放器，实际播放后记录到最近播放。'); })}>{busy === `play:${song.id}` ? <LoaderCircle className="spin" size={18} /> : <Play size={18} />}</button><button className="icon-button" disabled={!!busy} aria-label={`下载 ${song.title}`} onClick={() => void download(song)}>{busy === `download:${song.id}` ? <LoaderCircle className="spin" size={18} /> : <Download size={18} />}</button></div></article>)}
+      {results.map((song) => <div className="provider-result-wrap" key={song.id}><article className="provider-result"><div className="provider-result-cover">{song.coverUrl ? <img src={song.coverUrl} alt="" loading="lazy" /> : <Music2 size={23} />}</div><div className="provider-result-info"><strong>{song.title}</strong><span>{song.artist} · {song.album || '未知专辑'}</span><small>{providerLabel(song.provider)} · {Math.floor(song.duration / 60)}:{Math.floor(song.duration % 60).toString().padStart(2, '0')}</small></div><div className="provider-result-actions"><button className="icon-button" disabled={!!busy} aria-label={`查看歌词 ${song.title}`} title="查看歌词" onClick={() => void showLyrics(song)}>{busy === `lyrics:${song.id}` ? <LoaderCircle className="spin" size={18} /> : <Captions size={18} />}</button><button className="icon-button" disabled={!!busy || !song.capabilities.playback} aria-label={`在线播放 ${song.title}`} onClick={() => void run(`play:${song.id}`, async (signal) => { setStatus('正在获取歌词并解析播放地址…'); let lyrics: LyricLine[] = []; try { lyrics = await getLyrics(song, signal); } catch { signal.throwIfAborted(); } await onPlay(song, lyrics); setStatus(lyrics.length ? '已开始播放，歌词显示在播放器歌词面板。' : '已开始播放；暂未找到匹配歌词。'); })}>{busy === `play:${song.id}` ? <LoaderCircle className="spin" size={18} /> : <Play size={18} />}</button><button className="icon-button" disabled={!!busy} aria-label={`下载 ${song.title}`} title="下载 MP3" onClick={() => void download(song)}>{busy === `download:${song.id}` ? <LoaderCircle className="spin" size={18} /> : <Download size={18} />}</button></div></article>{lyricsPreview?.id === song.id && <div className="provider-lyrics-preview">{lyricsPreview.lines.length ? lyricsPreview.lines.slice(0, 8).map((line, index) => <p key={`${line.time}-${index}`}>{line.text}</p>) : <p>暂未找到匹配歌词。</p>}</div>}</div>)}
       {!results.length && <div className="provider-empty"><Music2 size={30} /><strong>发现下一首喜欢的歌</strong><span>选择平台，输入歌名或歌手开始搜索。</span></div>}
       {more && <button className="button outline provider-more" disabled={!!busy} onClick={() => void search(page + 1)}>更多结果</button>}
     </div>

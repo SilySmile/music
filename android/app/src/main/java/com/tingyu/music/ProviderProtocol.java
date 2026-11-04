@@ -63,7 +63,7 @@ public final class ProviderProtocol {
                 case "session": path = "/w/nuser/account/get"; payload = object(); break;
                 case "detail": path = "/v3/song/detail"; payload = object("c", new JSONArray().put(object("id", id)).toString()); break;
                 case "playback": path = "/song/enhance/player/url/v1"; payload = object("ids", new JSONArray().put(id).toString(), "level", "standard", "encodeType", "mp3"); break;
-                case "download": path = "/song/enhance/download/url"; payload = object("id", id, "br", 128000); break;
+                case "download": path = "/song/enhance/download/url"; payload = object("id", id, "br", 128000, "encodeType", "mp3"); break;
                 case "logout": path = "/logout"; payload = object(); break;
                 default: throw new Exception("不支持此音乐操作");
             }
@@ -86,7 +86,8 @@ public final class ProviderProtocol {
             case "login-check": module = "music.login.LoginServer"; method = "CheckQRCode"; payload = object("qrcodeID", data.getString("key"), "tmeAppID", "qqmusic"); break;
             case "session": module = "music.UserInfo.userInfoServer"; method = "GetLoginUserInfo"; payload = object(); break;
             case "detail": module = "music.pf_song_detail_svr"; method = "get_song_detail_yqq"; payload = object("song_mid", id); break;
-            case "playback": case "download": module = "vkey.GetVkeyServer"; method = "CgiGetVkey"; payload = object("guid", guid, "songmid", new JSONArray().put(id), "songtype", new JSONArray().put(0), "uin", uin, "loginflag", key.isEmpty() ? 0 : 1, "platform", "20"); break;
+            case "playback": module = "vkey.GetVkeyServer"; method = "CgiGetVkey"; payload = object("guid", guid, "songmid", new JSONArray().put(id), "songtype", new JSONArray().put(0), "uin", uin, "loginflag", key.isEmpty() ? 0 : 1, "platform", "20"); break;
+            case "download": module = "music.vkey.GetVkey"; method = "UrlGetVkey"; payload = object("filename", new JSONArray().put("M500" + id + id + ".mp3"), "guid", guid, "songmid", new JSONArray().put(id), "songtype", new JSONArray().put(0), "uin", uin, "loginflag", key.isEmpty() ? 0 : 1, "platform", "20", "ctx", 0); break;
             default: throw new Exception("不支持此音乐操作");
         }
         boolean mobile = action.equals("login-create") || action.equals("login-check") || action.equals("session");

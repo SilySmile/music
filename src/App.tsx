@@ -41,7 +41,7 @@ import { loadSourceConfig, sourceRequest, uploadSourceTrack, type SourceConfig, 
 import { createSourceTransfer, needsSourceSupplement, runSourceTransfer, sourceTransferLimit, sourceTransfersRunning } from './lib/sourceTransfers';
 import ProviderSearch from './components/ProviderSearch';
 import { addProviderRecent, mergeProviderRecent, externalTrack, readProviderRecent, recentPlaybackTracks, recentProvider, saveProviderRecent, type ProviderRecent } from './lib/providerHistory';
-import { resolveProviderMedia, type ProviderSearchResult } from './lib/providerSearch';
+import { findProviderLyrics, resolveProviderMedia, type ProviderSearchResult } from './lib/providerSearch';
 import { prepareProviderTrack, type ProviderSaveTarget } from './lib/providerDownload';
 
 type Modal = 'lyric-settings' | 'import' | 'settings' | 'queue' | 'online' | 'lyrics' | 'export' | 'transfers' | null;
@@ -453,13 +453,15 @@ export default function App() {
     void updateTrack(track.id, { lastPlayed: Date.now() });
   }, [currentId, beginPlayback, updateTrack, startNativeQueue, cloud.cache, notify]);
 
-  async function playExternal(song: ProviderSearchResult, offset = 0, nextQueue?: string[]) {
+  async function playExternal(song: ProviderSearchResult, offset = 0, nextQueue?: string[], suppliedLyrics?: Track['lyrics']) {
     if (librarySwitching.current || nativePreparing.current) throw Error('播放器或音乐库正在准备，请稍后再试。');
     const intent = ++playIntent.current;
     const media = await resolveProviderMedia(song);
     if (intent !== playIntent.current || librarySwitching.current) return;
     const entry = recentProvider(song);
-    const track = externalTrack(entry, media.url);
+    let lyrics = suppliedLyrics || [];
+    if (!lyrics.length) { try { lyrics = (await findProviderLyrics(song))[0]?.lyrics || []; } catch {} }
+    const track = externalTrack(entry, media.url, lyrics);
     rememberedExternal.current = '';
     resumePosition.current = offset > 0 ? { id: track.id, position: offset } : undefined;
     const sameSource = audioSourceId.current === track.id;
@@ -485,10 +487,10 @@ export default function App() {
     });
   }
 
-  async function saveProviderAudio(blob: Blob, song: ProviderSearchResult, target: ProviderSaveTarget, signal: AbortSignal) {
+  async function saveProviderAudio(blob: Blob, song: ProviderSearchResult, target: ProviderSaveTarget, signal: AbortSignal, lyrics: Track['lyrics']) {
     const { destination, scope } = target;
     if (librarySwitching.current || importLock.current || sourceTransferring.current) throw new Error('音乐库正在切换或写入，请稍后重试。');
-    const candidate = await prepareProviderTrack(blob, song, signal);
+    const candidate = await prepareProviderTrack(blob, song, signal, lyrics);
     if (scope !== await sourceLibraryScope()) throw new Error('音乐库已改变，已停止入库。');
     signal.throwIfAborted();
     if (importLock.current || librarySwitching.current || sourceTransferring.current) throw Error('音乐库正在写入，请稍后重新下载。');
@@ -778,7 +780,7 @@ export default function App() {
       <SeasonAtmosphere choice={season} />
       {storageProgress && <div className="storage-migration-banner" role="status"><LoaderCircle className="spin" size={18} /><span>{storageProgress}<small>正在读取或迁移音乐库，请勿关闭程序或移除磁盘；旧记录只在完整校验后清理。</small></span></div>}
       <header className="topbar"><div className="breadcrumbs">{screen === 'providers' ? '在线音乐' : '音乐库'} <span>/</span> <strong>{screen === 'providers' ? '在线搜索' : viewNames[view]}</strong></div><div className="topbar-right">{screen === 'library' && <label className="search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索歌曲、歌手、专辑" aria-label="搜索音乐" />{search && <button onClick={() => setSearch('')} aria-label="清除搜索"><X size={14} /></button>}</label>}<button className="icon-button settings-button" onClick={() => setModal('settings')} aria-label="偏好设置"><Settings2 size={19} /></button><span className="profile"><Headphones size={18} /></span></div></header>
-      <div hidden={screen !== 'providers'} className="provider-screen"><ProviderSearch active={screen === 'providers'} onDownloaded={saveProviderAudio} onPlay={playExternal} /></div>
+      <div hidden={screen !== 'providers'} className="provider-screen"><ProviderSearch active={screen === 'providers'} onDownloaded={saveProviderAudio} onPlay={(song, lyrics) => playExternal(song, 0, undefined, lyrics)} /></div>
       <div className="page-scroll" hidden={screen !== 'library'}>
         <section className="page-heading"><div><div className="eyebrow">YOUR PERSONAL SOUNDTRACK</div><h1>{viewNames[view]}<span className="heading-dot">.</span></h1><p>{view === 'all' ? '让喜欢的音乐，留在身边。' : view === 'favorites' ? '那些让你忍不住单曲循环的瞬间。' : '重温最近陪伴你的旋律。'}</p></div><button className="button outline import-top" onClick={() => setModal('import')}><Upload size={16} />导入音乐</button></section>
         {view === 'all' && !search && <section className="hero"><div className="hero-text"><span className="hero-kicker"><span />为热爱，留一座岛</span><h2>世界很大，<br />此刻只听<span>你喜欢的。</span></h2><p>收藏每一段旋律，让音乐与字句一起抵达。</p><button className="button hero-button" onClick={() => tracks.length ? playTrack(tracks[0], tracks.map((track) => track.id)) : setModal('import')}>{tracks.length ? <Play size={15} fill="currentColor" /> : <Upload size={15} />}{tracks.length ? '开始聆听' : '导入我的音乐'}<ArrowRight size={16} /></button><span className="hero-index">VOL. 01 <span> / </span> YOUR OWN FREQUENCY</span></div><div className="hero-art" aria-hidden="true"><div className={`vinyl ${playing ? 'spinning' : ''}`}><div className="vinyl-label"><span>弦栖霁</span><small>33⅓ RPM</small><i /></div></div><div className="record-sleeve"><div className="sleeve-sun" /><div className="sleeve-hills" /><div className="sleeve-title">SLOW<br />MOMENTS<span>把日子调成喜欢的频率</span></div><span className="sleeve-bottom">XIANQIJI RECORDS — 001</span></div><span className="hero-note">GOOD MUSIC. YOUR PACE.</span></div></section>}

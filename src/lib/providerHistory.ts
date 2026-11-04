@@ -31,7 +31,7 @@ export function recentPlaybackTracks(library: Track[], history: ProviderRecent[]
   for (const entry of history) { const local = entry.localId && library.find((track) => track.id === entry.localId); const track = local || externalTrack(entry); const lastPlayed = Math.max(entry.lastPlayed, items.get(track.id)?.lastPlayed || 0, track.lastPlayed || 0); items.set(track.id, { ...track, lastPlayed }); }
   return [...items.values()].sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
 }
-export function externalTrack(entry: ProviderRecent, streamUrl = ''): Track {
+export function externalTrack(entry: ProviderRecent, streamUrl = '', lyrics: Track['lyrics'] = []): Track {
   const song = entry.song; const id = Array.from(sha256(new TextEncoder().encode(`provider:${providerIdentifier(song.provider, song.id)}`)), (value) => value.toString(16).padStart(2, '0')).join('');
-  return { id, title: song.title, artist: song.artist, album: song.album, duration: song.duration, format: song.provider === 'qq' ? 'QQ 音乐' : '网易云音乐', audio: remoteAudio(streamUrl), lyrics: [], favorite: false, addedAt: 0, lastPlayed: entry.lastPlayed, external: { song } };
+  return { id, title: song.title, artist: song.artist, album: song.album, duration: song.duration, format: song.provider === 'qq' ? 'QQ 音乐' : '网易云音乐', audio: remoteAudio(streamUrl), lyrics, lyricsSource: lyrics.length ? 'LRCLIB' : undefined, favorite: false, addedAt: 0, lastPlayed: entry.lastPlayed, external: { song } };
 }

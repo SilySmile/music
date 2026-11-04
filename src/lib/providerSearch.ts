@@ -1,5 +1,6 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import QRCode from 'qrcode';
+import { findLyrics, type LyricCandidate } from './onlineLyrics';
 export type MusicProvider = 'qq' | 'netease';
 export type ProviderSearchResult = { id: string; provider: MusicProvider; title: string; artist: string; album: string; duration: number; coverUrl?: string; capabilities: { playback: boolean; download: boolean } };
 export type ProviderSession = { loggedIn: boolean; accountName?: string };
@@ -56,6 +57,10 @@ export async function searchProvider(provider: MusicProvider, query: string, pag
   if (!query.trim() || query.length > 200) throw Error('请输入 1–200 个字符的搜索内容。');
   return parseProviderSearch(provider, await providerRequest(provider, 'search', { query: query.trim(), page }, signal));
 }
+export async function findProviderLyrics(song: ProviderSearchResult, signal?: AbortSignal): Promise<LyricCandidate[]> {
+  validateProviderResult(song);
+  return findLyrics(song.title, song.artist, song.duration, signal);
+}
 export async function providerSession(provider: MusicProvider, signal?: AbortSignal): Promise<ProviderSession> {
   const response = await providerRequest(provider, 'session', {}, signal);
   const profile = provider === 'qq' ? response.info || response.user || response.userInfo || response : response.profile;
@@ -95,5 +100,7 @@ export function parseProviderMedia(provider: MusicProvider, response: Record<str
 export async function resolveProviderMedia(song: ProviderSearchResult, download = false, signal?: AbortSignal) {
   validateProviderResult(song);
   if (download && song.provider === 'qq') { const detail = await providerRequest('qq', 'detail', { id: song.id }, signal); if (detail.track_info?.pay?.pay_down !== 0) throw Error('此 QQ 歌曲未标记为可直接下载，暂不提供音频导出；可按账号权限在线播放。'); }
-  return parseProviderMedia(song.provider, await providerRequest(song.provider, download ? 'download' : 'playback', { id: song.id }, signal), download);
+  const media = parseProviderMedia(song.provider, await providerRequest(song.provider, download ? 'download' : 'playback', { id: song.id }, signal), download);
+  if (download && media.format !== 'mp3') throw Error(`平台当前提供 ${media.format.toUpperCase()}，未返回可直接保存的 MP3；未做加密内容转换。`);
+  return media;
 }

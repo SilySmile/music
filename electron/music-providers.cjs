@@ -36,7 +36,7 @@ function buildRequest(request, cookie) {
       session: ['/api/w/nuser/account/get', {}],
       detail: ['/api/v3/song/detail', { c: JSON.stringify([{ id }]) }],
       playback: ['/api/song/enhance/player/url/v1', { ids: JSON.stringify([id]), level: 'standard', encodeType: 'mp3' }],
-      download: ['/api/song/enhance/download/url', { id, br: 128000 }],
+      download: ['/api/song/enhance/download/url', { id, br: 128000, encodeType: 'mp3' }],
       logout: ['/api/logout', {}],
     };
     const route = routes[action]; if (!route) throw Error('不支持此音乐操作。');
@@ -55,7 +55,7 @@ function buildRequest(request, cookie) {
     session: ['music.UserInfo.userInfoServer', 'GetLoginUserInfo', {}],
     detail: ['music.pf_song_detail_svr', 'get_song_detail_yqq', { song_mid: id }],
     playback: ['vkey.GetVkeyServer', 'CgiGetVkey', { guid, songmid: [id], songtype: [0], uin, loginflag: key ? 1 : 0, platform: '20' }],
-    download: ['vkey.GetVkeyServer', 'CgiGetVkey', { guid, songmid: [id], songtype: [0], uin, loginflag: key ? 1 : 0, platform: '20' }],
+    download: ['music.vkey.GetVkey', 'UrlGetVkey', { filename: [`M500${id}${id}.mp3`], guid, songmid: [id], songtype: [0], uin, loginflag: key ? 1 : 0, platform: '20', ctx: 0 }],
   };
   const route = routes[action]; if (!route) throw Error('不支持此音乐操作。');
   const mobile = ['login-create', 'login-check', 'session'].includes(action);

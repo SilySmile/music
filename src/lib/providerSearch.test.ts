@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { checkProviderLogin, parseProviderMedia, parseProviderSearch, providerIdentifier, providerRequest, providerSession, validateProviderAudioUrl } from './providerSearch';
+import { checkProviderLogin, findProviderLyrics, parseProviderMedia, parseProviderSearch, providerIdentifier, providerRequest, providerSession, resolveProviderMedia, validateProviderAudioUrl } from './providerSearch';
 afterEach(() => vi.unstubAllGlobals());
 describe('device-local music providers', () => {
   it('tracks NetEase scan, authorization and expiration and rejects terminal platform errors', async () => {
@@ -34,6 +34,12 @@ describe('device-local music providers', () => {
     expect(netease.results[0]).toMatchObject({ id: '123', provider: 'netease', duration: 123, coverUrl: 'https://p2.music.126.net/cover.jpg' });
     expect(providerIdentifier('qq', '123')).not.toEqual(providerIdentifier('netease', '123'));
     expect(() => parseProviderSearch('netease', { code: 301 })).toThrow();
+  });
+  it('finds timed lyrics by the exact online track and refuses non-MP3 download formats', async () => {
+    const song = { provider: 'qq' as const, id: 'fixture1', title: '在线歌曲', artist: '歌手', album: '专辑', duration: 180, capabilities: { playback: true, download: true } };
+    vi.stubGlobal('window', { tingyuDesktop: { request: async (request: { service: string }) => { expect(request.service).toBe('lyrics'); return [{ id: 1, trackName: '在线歌曲', artistName: '歌手', duration: 180, syncedLyrics: '[00:01.00]歌词行' }]; }, requestProvider: async (request: { action: string }) => request.action === 'detail' ? { code: 0, req_0: { code: 0, data: { track_info: { pay: { pay_down: 0 } } } } } : ({ code: 0, req_0: { code: 0, data: { sip: ['https://aqqmusic.tc.qq.com/'], midurlinfo: [{ purl: 'C400fixture.m4a?vkey=x', type: 'm4a' }] } } }) } });
+    expect((await findProviderLyrics(song))[0].lyrics[0]).toMatchObject({ time: 1, text: '歌词行' });
+    await expect(resolveProviderMedia(song, true)).rejects.toThrow(/未返回可直接保存的 MP3/);
   });
   it('refuses forged media hosts, credentials, ports and a preview disguised as a full download', () => {
     const valid = 'https://m801.music.126.net/path/audio.mp3?auth=temporary';
