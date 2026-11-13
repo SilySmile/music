@@ -40,7 +40,7 @@ async function main() {
           if (plugin === 'BackgroundTasks') return {};
           if (plugin === 'MusicProviders') {
             if (method === 'cancel') return {};
-            if (method === 'saveLoginQr') { localStorage.setItem('mock-qr-saved', options.image); return {}; }
+            if (method === 'saveLoginQr') { if (localStorage.getItem('mock-qr-denied')) throw Error('未允许保存到相册'); localStorage.setItem('mock-qr-save-count', String(Number(localStorage.getItem('mock-qr-save-count') || 0) + 1)); localStorage.setItem('mock-qr-saved', options.image); return {}; }
             if (method === 'openProviderApp') { localStorage.setItem('mock-provider-opened', options.provider); return {}; }
             if (options.action === 'login-create') return { code: 0, req_0: { code: 0, data: { qrcodeID: 'android-login', qrcode: 'https://y.qq.com/fixture-login', expiresIn: 180 } } };
             if (options.action === 'login-check') return { code: 0, req_0: { code: localStorage.getItem('mock-provider-confirmed') ? 0 : 40000, data: {} } };
@@ -125,6 +125,33 @@ async function main() {
     await page.evaluate(() => localStorage.removeItem('mock-native-queue'));
     await page.getByRole('button', { name: '在线搜索', exact: true }).click(); await page.getByLabel('搜索在线音乐').fill('测试'); await page.locator('.provider-search-form button[type=submit]').click();
     await page.getByRole('button', { name: '扫码登录', exact: true }).click();
+    const qr = page.getByRole('button', { name: '保存QQ 音乐登录二维码到相册', exact: true });
+    const down = { pointerId: 7, pointerType: 'touch', isPrimary: true, clientX: 100, clientY: 100 };
+    await qr.dispatchEvent('pointerdown', down);
+    await qr.dispatchEvent('pointerup', down);
+    await page.waitForTimeout(700);
+    assert.equal(await page.evaluate(() => localStorage.getItem('mock-qr-save-count')), null);
+    await qr.dispatchEvent('pointerdown', down);
+    await qr.dispatchEvent('pointermove', { ...down, clientY: 130 });
+    await page.waitForTimeout(700);
+    assert.equal(await page.evaluate(() => localStorage.getItem('mock-qr-save-count')), null);
+    await qr.dispatchEvent('pointerdown', down);
+    await qr.dispatchEvent('pointercancel', down);
+    await page.waitForTimeout(700);
+    assert.equal(await page.evaluate(() => localStorage.getItem('mock-qr-save-count')), null);
+    await qr.dispatchEvent('pointerdown', down);
+    await page.waitForFunction(() => localStorage.getItem('mock-qr-save-count') === '1');
+    await qr.dispatchEvent('pointerup', down);
+    await page.locator('.provider-qr-message').filter({ hasText: '已保存到相册' }).waitFor();
+    await page.waitForTimeout(700);
+    assert.equal(await page.evaluate(() => localStorage.getItem('mock-qr-save-count')), '1');
+    assert.equal(await page.evaluate(() => localStorage.getItem('mock-provider-opened')), null);
+    await page.evaluate(() => localStorage.setItem('mock-qr-denied', 'true'));
+    await qr.dispatchEvent('pointerdown', down);
+    await page.locator('.provider-qr-message').filter({ hasText: '未允许保存到相册' }).waitFor();
+    await qr.dispatchEvent('pointerup', down);
+    await page.evaluate(() => localStorage.removeItem('mock-qr-denied'));
+    console.log('PASS QR long press saves once without launching App; short tap, scrolling and pointer cancel do not save; permission failure shown');
     await page.getByRole('button', { name: '保存二维码并打开 App', exact: true }).click();
     assert.match(await page.evaluate(() => localStorage.getItem('mock-qr-saved')), /^data:image\/png;base64,/);
     assert.equal(await page.evaluate(() => localStorage.getItem('mock-provider-opened')), 'qq');
