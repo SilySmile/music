@@ -6,6 +6,7 @@ import { cloudPreferences, cloudTrack } from './cloudLibrary';
 import { patchTrack, sourceLibraryScope } from './storage';
 import { androidPlayer, prepareAndroidQueue } from './androidPlayback';
 import { beginBackgroundTask, type BackgroundHandle } from './backgroundTasks';
+import { cloudAutoDownload } from './listeningPreferences';
 
 export function useCloudLibrary(onCached: (track: Track) => void) {
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -31,7 +32,7 @@ export function useCloudLibrary(onCached: (track: Track) => void) {
   const stop = useCallback(() => { cachePaused.current = true; generation.current += 1; active.current?.controller.abort(); setMessage('已停止缓存队列，已完整保存的歌曲保留在当前音乐库。'); }, []);
   const cache = useCallback((track: Track, manual = true): Promise<Track | undefined> => {
     if (!track.cloud) return Promise.resolve(track);
-    if (manual) cachePaused.current = false; else if (cachePaused.current) return Promise.resolve(undefined);
+    if (manual) cachePaused.current = false; else if (cachePaused.current || !cloudAutoDownload()) return Promise.resolve(undefined);
     const currentGeneration = generation.current;
     const key = `${currentGeneration}:${track.cloud.source}:${track.id}`;
     const existing = pending.current.get(key); if (existing) return existing;
@@ -75,7 +76,7 @@ export function useCloudLibrary(onCached: (track: Track) => void) {
         const track = cloudTrack(record, saved, info.publicRead === true && info.streaming === true);
         try { const preferences = cloudPreferences(JSON.parse(localStorage.getItem(`xianqiji-cloud-preference:${saved.baseUrl}:${track.id}`) || '{}')); return { ...track, ...preferences }; } catch { return track; }
       });
-      setTracks(list); setMessage(`云端 ${list.length} 首已加入全部歌曲，点播时保存到当前本地音乐库。`);
+      setTracks(list); setMessage(`云端 ${list.length} 首已加入全部歌曲，可在设置中选择是否自动保存到本地。`);
     };
     const load = async (force = false) => {
       const requested = ++requestRevision;
@@ -101,10 +102,13 @@ export function useCloudLibrary(onCached: (track: Track) => void) {
     const nativeTrack = (event: Event) => {
       const id = (event as CustomEvent<string>).detail;
       const track = currentTracks.current.find((track) => track.id === id);
-      if (track && !pending.current.has(`${generation.current}:${track.cloud?.source}:${id}`) && !cachePaused.current) { patch(id, { lastPlayed: Date.now() }); void cache({ ...track, lastPlayed: Date.now() }, false); }
+      if (track) patch(id, { lastPlayed: Date.now() });
+      if (track && !cloudAutoDownload()) void androidPlayer.control({ action: 'cached', text: id }).catch(() => {});
+      if (track && cloudAutoDownload() && !pending.current.has(`${generation.current}:${track.cloud?.source}:${id}`) && !cachePaused.current) void cache({ ...track, lastPlayed: Date.now() }, false);
     };
-    handle(); window.addEventListener('xianqiji-cloud-catalog', catalog); window.addEventListener('xianqiji-source-config-changed', handle); window.addEventListener('xianqiji-cloud-played', nativeTrack); window.addEventListener('online', refresh);
-    return () => { mounted.current = false; revision += 1; requestRevision += 1; controller?.abort(); active.current?.controller.abort(); window.removeEventListener('xianqiji-cloud-catalog', catalog); window.removeEventListener('xianqiji-source-config-changed', handle); window.removeEventListener('xianqiji-cloud-played', nativeTrack); window.removeEventListener('online', refresh); };
-  }, [cache, patch, refresh]);
+    const preferences = () => { if (!cloudAutoDownload()) stop(); else cachePaused.current = false; };
+    handle(); window.addEventListener('xianqiji-listening-preferences', preferences); window.addEventListener('xianqiji-cloud-catalog', catalog); window.addEventListener('xianqiji-source-config-changed', handle); window.addEventListener('xianqiji-cloud-played', nativeTrack); window.addEventListener('online', refresh);
+    return () => { mounted.current = false; revision += 1; requestRevision += 1; controller?.abort(); active.current?.controller.abort(); window.removeEventListener('xianqiji-listening-preferences', preferences); window.removeEventListener('xianqiji-cloud-catalog', catalog); window.removeEventListener('xianqiji-source-config-changed', handle); window.removeEventListener('xianqiji-cloud-played', nativeTrack); window.removeEventListener('online', refresh); };
+  }, [cache, patch, refresh, stop]);
   return { tracks, message, caching, cache, patch, refresh, stop };
 }

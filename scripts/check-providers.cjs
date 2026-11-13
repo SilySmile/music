@@ -49,6 +49,10 @@ async function main() {
           if (method === 'Login') { if (param.token !== 'fixture-one-time-exchange') throw Error('Wrong QR exchange token'); return envelope({ musicid: '123456', musickey: 'fixture-private-session', refresh_key: 'fixture-private-refresh' }); }
           if (method === 'CreateQRCode') return envelope({ qrcodeID: 'fixture-qrcode', qrcode: 'https://y.qq.com/fixture-login', expiresIn: 180 });
           if (method === 'CheckQRCode') return state.login ? envelope({ musicid: '123456', musickey: 'fixture-private-session', refresh_key: 'fixture-private-refresh' }) : envelope(null, 40000);
+          if (method === 'DoSearchForQQMusicMobile' && param.query === '分页') {
+            if (state.searchFailOnce && param.page_num === 2) { state.searchFailOnce = false; return envelope(null, 500); }
+            return envelope({ body: { item_song: Array.from({length:param.page_num === 3 ? 3 : 20}, (_,i) => ({mid:'page'+((param.page_num-1)*20+i),title:'分页歌曲 '+((param.page_num-1)*20+i),singer:[{name:'测试歌手'}],album:{name:'分页测试'},interval:10})) } });
+          }
           if (method === 'DoSearchForQQMusicMobile') return envelope({ body: { item_song: [{ mid: 'fixture001', title: '测试在线歌曲', singer: [{ name: '测试歌手' }], album: { name: '测试专辑' }, interval: 10 }] } });
           if (method === 'get_song_detail_yqq') return envelope({ track_info: { pay: { pay_down: state.mode === 'paid' ? 1 : 0 } } });
           if (method === 'CgiGetVkey' || method === 'UrlGetVkey') { state.mediaCalls++; return envelope({ sip: ['https://ws.stream.qqmusic.qq.com/'], midurlinfo: [{ purl: state.mode === 'denied' ? '' : state.mode === 'preview' ? 'RS02fixture.wav' : method === 'UrlGetVkey' ? param.filename[0] : `${param.songmid[0]}.wav`, type: method === 'UrlGetVkey' ? 'mp3' : 'wav' }] }); }
@@ -128,6 +132,23 @@ async function main() {
     await application.close(); application = undefined; page = await launch(); await page.getByText('测试 QQ 用户', { exact: true }).waitFor();
     await page.getByRole('button', { name: '退出登录', exact: true }).click(); await page.locator('.provider-status').filter({ hasText: '已清除' }).waitFor(); await assert.rejects(fs.stat(path.join(profile, 'config/provider-qq.bin')), { code: 'ENOENT' });
     await page.getByRole('button', { name: '网易云音乐', exact: true }).click(); await page.getByText('测试网易用户', { exact: true }).waitFor(); await page.getByRole('button', { name: '退出登录', exact: true }).click(); await page.locator('.provider-status').filter({ hasText: '已清除' }).waitFor();
+    await page.getByRole('button', {name:'QQ 音乐',exact:true}).click();
+    await state({ searchFailOnce: true });
+    await page.getByLabel('搜索在线音乐').fill('分页');
+    await page.locator('.provider-search-form button[type=submit]').click();
+    await page.waitForFunction(() => document.querySelectorAll('.provider-result').length === 20);
+    await page.locator('.provider-results .load-more').scrollIntoViewIfNeeded();
+    await page.getByRole('button', {name:'加载失败，点击重试',exact:true}).waitFor();
+    await page.getByRole('button', {name:'加载失败，点击重试',exact:true}).click();
+    await page.waitForFunction(() => document.querySelectorAll('.provider-result').length === 40);
+    await page.locator('.provider-results .load-more').scrollIntoViewIfNeeded();
+    await page.waitForFunction(() => document.querySelectorAll('.provider-result').length === 43);
+    assert.equal(await page.locator('.provider-result-info strong').first().textContent(), '分页歌曲 0');
+    await page.getByRole('button', {name:'清除在线搜索',exact:true}).click();
+    assert.equal(await page.getByLabel('搜索在线音乐').inputValue(), '');
+    await page.locator('.provider-search-history button').filter({hasText:'分页'}).click();
+    await page.waitForFunction(() => document.querySelectorAll('.provider-result').length === 20);
+    console.log('PASS online scroll append retains preceding songs, stops at end, failed page needs explicit retry, clear input and search history');
     assert.deepEqual(errors, []); console.log('PASS both accounts survive native restart and clear independently; mobile layout has no overflow; no renderer errors');
   } catch (error) { const page = application && (await application.windows())[0]; if (page) { console.error(await page.locator('.provider-status').textContent().catch(() => '')); await page.screenshot({ path: path.join(root, 'test-results/providers-failure.png') }).catch(() => {}); } throw error; }
   finally { await application?.close().catch(() => {}); backend.kill(); }

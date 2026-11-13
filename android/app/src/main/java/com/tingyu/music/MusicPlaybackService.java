@@ -93,6 +93,9 @@ public class MusicPlaybackService extends Service {
             state.put("mode", mode); state.put("volume", volume); state.put("error", error);
             state.put("deadline", deadline); state.put("finishTrack", finishTrack);
             state.put("cloudPlayed", new JSONArray(cloudPlayed));
+            JSONArray queueIds = new JSONArray();
+            for (int i = 0; i < queue.length(); i++) queueIds.put(queue.getJSONObject(i).getString("id"));
+            state.put("queueIds", queueIds);
         } catch (Exception ignored) {}
         return state;
     }
@@ -231,7 +234,16 @@ public class MusicPlaybackService extends Service {
         if (intent == null) return START_NOT_STICKY;
         String action = intent.getAction();
         try {
-            if ("queue".equals(action)) {
+            if ("queue-edit".equals(action)) {
+                String currentId = track().optString("id");
+                JSONArray edited;
+                try (FileInputStream input = new FileInputStream(new File(getFilesDir(), "playback-queue.json")); ByteArrayOutputStream bytes = new ByteArrayOutputStream()) { byte[] buffer = new byte[8192]; int length; while ((length = input.read(buffer)) != -1) bytes.write(buffer, 0, length); edited = new JSONArray(new String(bytes.toByteArray(), StandardCharsets.UTF_8)); }
+                int preserved = -1;
+                for (int i = 0; i < edited.length(); i++) if (edited.getJSONObject(i).optString("id").equals(currentId)) { preserved = i; break; }
+                queue = edited; shuffleBag.clear();
+                if (preserved >= 0) index = preserved;
+                else select(intent.getStringExtra("id"), 0, wanted);
+            } else if ("queue".equals(action)) {
                 savePosition(true);
                 try (FileInputStream input = new FileInputStream(new File(getFilesDir(), "playback-queue.json")); ByteArrayOutputStream bytes = new ByteArrayOutputStream()) { byte[] buffer = new byte[8192]; int length; while ((length = input.read(buffer)) != -1) bytes.write(buffer, 0, length); queue = new JSONArray(new String(bytes.toByteArray(), StandardCharsets.UTF_8)); }
                 mode = intent.getStringExtra("mode"); volume = (float) intent.getDoubleExtra("volume", 0.7); fade = intent.getIntExtra("fade", 500);

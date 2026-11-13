@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import '../providerStyles.css';
-import { Captions, Download, LoaderCircle, LogIn, Music2, Play, RefreshCw, Search, ShieldCheck, Square } from 'lucide-react';
+import { Captions, Download, LoaderCircle, LogIn, Music2, Play, Plus, RefreshCw, Search, ShieldCheck, Square, X } from 'lucide-react';
+import LoadMore from './LoadMore';
+import { mobileProviderLogin, openProviderApp, saveProviderQr, shareProviderQr } from '../lib/providerLoginUi';
 import { beginProviderLogin, checkProviderLogin, findProviderLyrics, ProviderLoginError, providerLabel, providerRequest, providerSession, providersAvailable, resolveProviderMedia, searchProvider, type MusicProvider, type ProviderLogin, type ProviderSearchResult, type ProviderSession } from '../lib/providerSearch';
 import { downloadProviderAudio, type ProviderSaveTarget } from '../lib/providerDownload';
 import type { LyricLine } from '../types';
@@ -9,10 +11,11 @@ import { loadSourceConfig } from '../lib/onlineSource';
 import { beginBackgroundTask } from '../lib/backgroundTasks';
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '音乐平台暂不可用，请稍后重试。';
-export default function ProviderSearch({ active, onDownloaded, onPlay }: {
+export default function ProviderSearch({ active, onDownloaded, onPlay, onEnqueue }: {
   active: boolean;
   onDownloaded(blob: Blob, song: ProviderSearchResult, target: ProviderSaveTarget, signal: AbortSignal, lyrics: LyricLine[]): Promise<void>;
   onPlay(song: ProviderSearchResult, lyrics: LyricLine[]): Promise<void>;
+  onEnqueue(song: ProviderSearchResult): void;
 }) {
   const [provider, setProvider] = useState<MusicProvider>('qq');
   const [session, setSession] = useState<ProviderSession>();
@@ -22,6 +25,11 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
   const [results, setResults] = useState<ProviderSearchResult[]>([]);
   const [page, setPage] = useState(0);
   const [more, setMore] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [searchRevision, setSearchRevision] = useState(0);
+  const [history, setHistory] = useState<string[]>([]);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const mobileLogin = mobileProviderLogin();
   const [destination, setDestination] = useState<'local' | 'server'>('local');
   const [busy, setBusy] = useState('');
   const [status, setStatus] = useState('');
@@ -36,6 +44,8 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
   useEffect(() => {
     const revision = ++generation.current, abort = new AbortController();
     setSession(undefined); setLogin(undefined); setResults([]); setPage(0); setMore(false); setSubmitted(''); setStatus(''); setLyricsPreview(undefined);
+    setLoadFailed(false);
+    try { const saved: unknown = JSON.parse(localStorage.getItem(`xianqiji-search:${provider}`) || '[]'); setHistory(Array.isArray(saved) ? saved.filter((value): value is string => typeof value === 'string' && value.length <= 200).slice(0, 8) : []); } catch { setHistory([]); }
     if (available && opened) void providerSession(provider, abort.signal).then((value) => { if (revision === generation.current) setSession(value); }).catch((error) => { if (!abort.signal.aborted && revision === generation.current) setStatus(errorText(error)); });
     return () => { abort.abort(); };
   }, [provider, available, opened]);
@@ -43,8 +53,10 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
 
   useEffect(() => {
     if (!login || !['waiting', 'confirmed'].includes(login.status)) return;
-    const abort = new AbortController(), revision = generation.current; let timer: ReturnType<typeof setTimeout>;
+    const abort = new AbortController(), revision = generation.current; let timer: ReturnType<typeof setTimeout>; let polling = false;
     const poll = async () => {
+      if (polling || abort.signal.aborted) return;
+      polling = true;
       try {
         const next = await checkProviderLogin(provider, login, abort.signal);
         if (abort.signal.aborted || revision !== generation.current) return;
@@ -57,10 +69,13 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
         if (next.status === 'expired') { setLogin(next); setStatus('登录二维码已过期，请重新生成。'); return; }
         if (next.status === 'confirmed') { setLogin((previous) => previous && previous.status !== 'confirmed' ? { ...previous, status: 'confirmed' } : previous); setStatus('已检测到扫码，请在官方应用中确认登录，正在等待账号授权。'); }
       } catch (error) { if (abort.signal.aborted) return; setStatus(errorText(error)); if (error instanceof ProviderLoginError) { setLogin((previous) => previous && { ...previous, status: 'failed' }); return; } }
+      finally { polling = false; }
       if (!abort.signal.aborted) timer = setTimeout(() => void poll(), 1000);
     };
     timer = setTimeout(() => void poll(), 800);
-    return () => { abort.abort(); clearTimeout(timer); };
+    const resume = () => { if (!document.hidden && !polling) { clearTimeout(timer); void poll(); } };
+    document.addEventListener('visibilitychange', resume);
+    return () => { abort.abort(); clearTimeout(timer); document.removeEventListener('visibilitychange', resume); };
   }, [provider, login?.key, login?.status]);
 
   async function run(label: string, action: (signal: AbortSignal) => Promise<void>) {
@@ -70,14 +85,20 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
     catch (error) { setStatus(abort.signal.aborted ? '操作已停止；未完成的下载不会加入音乐库。' : errorText(error)); }
     finally { if (controller.current === abort) controller.current = undefined; locked.current = false; setBusy(''); }
   }
-  async function search(nextPage: number) {
-    const keyword = nextPage === 1 ? query.trim() : submitted;
+  async function search(nextPage: number, chosen?: string) {
+    const keyword = nextPage === 1 ? (chosen ?? query).trim() : submitted;
+    if (!keyword || locked.current) return;
     await run('search', async (signal) => {
+      if (nextPage === 1) { setSearchRevision((value) => value + 1); searchInput.current?.blur(); searchInput.current?.closest('.provider-screen')?.scrollTo({ top: 0 }); }
+      setLoadFailed(false);
       setStatus('正在搜索…');
+      try {
       const response = await searchProvider(provider, keyword, nextPage, signal);
       setResults((previous) => nextPage === 1 ? response.results : [...previous, ...response.results.filter((item) => !previous.some((old) => old.id === item.id))]);
-      setPage(nextPage); setMore(response.more); setSubmitted(keyword);
+      setPage(nextPage); setMore(response.more && response.results.length > 0 && (nextPage === 1 || response.results.some((item) => !results.some((old) => old.id === item.id)))); setSubmitted(keyword);
+      if (nextPage === 1) { const next = [keyword, ...history.filter((value) => value !== keyword)].slice(0, 8); setHistory(next); try { localStorage.setItem(`xianqiji-search:${provider}`, JSON.stringify(next)); } catch {} }
       setStatus(response.results.length ? '结果按平台展示；实际可播放和可下载范围取决于歌曲及账号权限。' : '没有找到歌曲，换个关键词试试。');
+      } catch (error) { setLoadFailed(true); throw error; }
     });
   }
   async function getLyrics(song: ProviderSearchResult, signal?: AbortSignal) {
@@ -121,17 +142,17 @@ export default function ProviderSearch({ active, onDownloaded, onPlay }: {
   return <section className="provider-search-page">
     <header className="provider-heading"><span className="eyebrow">EXPLORE YOUR MUSIC</span><h1>在线搜索<span className="heading-dot">.</span></h1><p>听过的歌会出现在最近播放。完整保存到本地或个人服务器后，才加入我的音乐。</p></header>
     <div className="provider-toolbar"><div className="provider-tabs" role="group" aria-label="选择在线音乐平台">{(['qq', 'netease'] as const).map((item) => <button key={item} disabled={!!busy} aria-pressed={provider === item} onClick={() => setProvider(item)}>{providerLabel(item)}</button>)}</div>
-      <div className="provider-account"><span>{session?.loggedIn ? session.accountName || '已登录' : '未登录'}</span>{session?.loggedIn ? <button className="text-button" disabled={!!busy} onClick={() => void run('logout', async () => { generation.current++; setLogin(undefined); await providerRequest(provider, 'logout'); setSession({ loggedIn: false }); setStatus('已清除本设备的账号会话。'); })}>退出登录</button> : <button className="button outline" disabled={!available || !!busy} onClick={() => void run('login', async (signal) => { setLogin(undefined); setStatus('正在创建官方扫码会话…'); const value = await beginProviderLogin(provider, signal); setLogin(value); setStatus(`请使用${providerLabel(provider)}官方应用扫码，并在手机上确认。`); })}><LogIn size={15} />扫码登录</button>}</div>
+      <div className="provider-account"><span>{session?.loggedIn ? session.accountName || '已登录' : '未登录'}</span>{session?.loggedIn ? <button className="text-button" disabled={!!busy} onClick={() => void run('logout', async () => { generation.current++; setLogin(undefined); await providerRequest(provider, 'logout'); setSession({ loggedIn: false }); setStatus('已清除本设备的账号会话。'); })}>退出登录</button> : <button className="button outline" disabled={!available || !!busy} onClick={() => void run('login', async (signal) => { setLogin(undefined); setStatus('正在创建官方扫码会话…'); const value = await beginProviderLogin(provider, signal); setLogin(value); setStatus(`请使用${providerLabel(provider)}官方应用扫码并确认；手机可保存二维码后从扫一扫的相册选择。`); })}><LogIn size={15} />扫码登录</button>}</div>
     </div>
-    {login && ['waiting', 'confirmed', 'expired'].includes(login.status) && <div className="provider-login-code"><img src={login.qrImageUrl} alt={`${providerLabel(provider)}登录二维码`} className={login.status === 'expired' ? 'expired' : ''} /><div><strong>{login.status === 'expired' ? '二维码已过期' : login.status === 'confirmed' ? '请在手机确认登录' : `使用${providerLabel(provider)}扫码`}</strong><span>账号仅保存在当前设备，其他设备需单独登录。</span><button className="text-button" disabled={!!busy} onClick={() => void run('login', async (signal) => { setLogin(undefined); setLogin(await beginProviderLogin(provider, signal)); })}><RefreshCw size={14} />刷新二维码</button><button className="text-button" onClick={() => setLogin(undefined)}>关闭</button></div></div>}
+    {login && ['waiting', 'confirmed', 'expired'].includes(login.status) && <div className="provider-login-code"><img src={login.qrImageUrl} alt={`${providerLabel(provider)}登录二维码`} className={login.status === 'expired' ? 'expired' : ''} /><div><strong>{login.status === 'expired' ? '二维码已过期' : login.status === 'confirmed' ? '请在手机确认登录' : `使用${providerLabel(provider)}扫码`}</strong><span>{mobileLogin ? '同一台手机：保存二维码 → 打开官方 App 的扫一扫 → 从相册选图 → 确认登录 → 返回弦栖霁。如官方 App 不支持相册识别，可分享二维码到另一台设备展示。' : '账号仅保存在当前设备，其他设备需单独登录。'}</span>{mobileLogin && login.status !== 'expired' && <div className="provider-login-actions"><button className="button primary" disabled={!!busy} onClick={() => void run('qr-save', async () => { await saveProviderQr(login.qrImageUrl!); setStatus('二维码已保存到相册。请在官方 App 的扫一扫中从相册选图，确认后返回。'); await openProviderApp(provider); })}><Download size={15} />保存二维码并打开 App</button><button className="text-button" disabled={!!busy} onClick={() => void run('qr-share', async () => { await shareProviderQr(login.qrImageUrl!); setStatus('请使用官方 App 扫码并确认，返回这里自动核验登录状态。'); })}>分享二维码到其他设备</button></div>}<button className="text-button" disabled={!!busy} onClick={() => void run('login', async (signal) => { setLogin(undefined); setLogin(await beginProviderLogin(provider, signal)); })}><RefreshCw size={14} />刷新二维码</button><button className="text-button" onClick={() => setLogin(undefined)}>关闭</button></div></div>}
     {!session?.loggedIn && available && <button className="text-button" disabled={!!busy} onClick={() => void run('logout', async () => { generation.current++; setLogin(undefined); await providerRequest(provider, 'logout'); setSession({ loggedIn: false }); setStatus('已清除本设备会话，可以重新扫码登录。'); })}>清除本机登录状态</button>}
-    <form className="provider-search-form" onSubmit={(event) => { event.preventDefault(); void search(1); }}><label htmlFor="provider-query"><Search size={18} /><input id="provider-query" aria-label="搜索在线音乐" value={query} disabled={!!busy} onChange={(event) => setQuery(event.target.value)} maxLength={200} placeholder={`搜索${providerLabel(provider)}的歌名、歌手或专辑`} /></label><button className="button primary" disabled={!available || !!busy || !query.trim()} type="submit">{busy === 'search' ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}搜索</button></form>
-    <div className="provider-download-target"><span>下载到</span><div className="provider-tabs" role="group" aria-label="下载保存位置"><button disabled={!!busy} aria-pressed={destination === 'local'} onClick={() => setDestination('local')}>本地音乐库</button><button disabled={!!busy} aria-pressed={destination === 'server'} onClick={() => setDestination('server')}>个人服务器</button></div></div>
+    <form className="provider-search-form" onSubmit={(event) => { event.preventDefault(); void search(1); }}><label htmlFor="provider-query"><Search size={18} /><input ref={searchInput} type="search" inputMode="search" enterKeyHint="search" autoComplete="off" id="provider-query" aria-label="搜索在线音乐" value={query} disabled={!!busy} onChange={(event) => setQuery(event.target.value)} maxLength={200} placeholder="歌名、歌手或专辑" />{query && <button type="button" className="icon-button" aria-label="清除在线搜索" disabled={!!busy} onClick={() => { setQuery(''); searchInput.current?.focus(); }}><X size={16} /></button>}</label><button className="button primary" disabled={!available || !!busy || !query.trim()} type="submit">{busy === 'search' ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}搜索</button></form>
+    {history.length > 0 && <div className="provider-search-history"><span>最近搜索</span>{history.map((keyword) => <button key={keyword} disabled={!!busy} onClick={() => { setQuery(keyword); void search(1, keyword); }}>{keyword}</button>)}<button className="text-button" disabled={!!busy} aria-label="清空在线搜索历史" onClick={() => { try { localStorage.removeItem(`xianqiji-search:${provider}`); setHistory([]); } catch { setStatus('搜索历史清除失败。'); } }}>清空</button></div>}<div className="provider-download-target"><span>下载到</span><div className="provider-tabs" role="group" aria-label="下载保存位置"><button disabled={!!busy} aria-pressed={destination === 'local'} onClick={() => setDestination('local')}>本地音乐库</button><button disabled={!!busy} aria-pressed={destination === 'server'} onClick={() => setDestination('server')}>个人服务器</button></div></div>
     <p className="provider-status" role="status">{!available ? '请在 Windows 或安卓安装版中使用在线音源。' : status || '可以直接搜索；登录后按你的账号权限播放与下载。'}{busy && !busy.startsWith('play:') && <button className="text-button" onClick={() => controller.current?.abort()}><Square size={12} />停止</button>}</p>
     <div className="provider-results">{results.length > 0 && <div className="provider-results-heading"><strong>“{submitted}”</strong><span>{results.length} 首 · {providerLabel(provider)}</span></div>}
-      {results.map((song) => <div className="provider-result-wrap" key={song.id}><article className="provider-result"><div className="provider-result-cover">{song.coverUrl ? <img src={song.coverUrl} alt="" loading="lazy" /> : <Music2 size={23} />}</div><div className="provider-result-info"><strong>{song.title}</strong><span>{song.artist} · {song.album || '未知专辑'}</span><small>{providerLabel(song.provider)} · {Math.floor(song.duration / 60)}:{Math.floor(song.duration % 60).toString().padStart(2, '0')}</small></div><div className="provider-result-actions"><button className="icon-button" disabled={!!busy} aria-label={`查看歌词 ${song.title}`} title="查看歌词" onClick={() => void showLyrics(song)}>{busy === `lyrics:${song.id}` ? <LoaderCircle className="spin" size={18} /> : <Captions size={18} />}</button><button className="icon-button" disabled={!!busy || !song.capabilities.playback} aria-label={`在线播放 ${song.title}`} onClick={() => void run(`play:${song.id}`, async (signal) => { setStatus('正在获取歌词并解析播放地址…'); let lyrics: LyricLine[] = []; try { lyrics = await getLyrics(song, signal); } catch { signal.throwIfAborted(); } await onPlay(song, lyrics); setStatus(lyrics.length ? '已开始播放，歌词显示在播放器歌词面板。' : '已开始播放；暂未找到匹配歌词。'); })}>{busy === `play:${song.id}` ? <LoaderCircle className="spin" size={18} /> : <Play size={18} />}</button><button className="icon-button" disabled={!!busy} aria-label={`下载 ${song.title}`} title="下载 MP3" onClick={() => void download(song)}>{busy === `download:${song.id}` ? <LoaderCircle className="spin" size={18} /> : <Download size={18} />}</button></div></article>{lyricsPreview?.id === song.id && <div className="provider-lyrics-preview">{lyricsPreview.lines.length ? lyricsPreview.lines.slice(0, 8).map((line, index) => <p key={`${line.time}-${index}`}>{line.text}</p>) : <p>暂未找到匹配歌词。</p>}</div>}</div>)}
+      {results.map((song) => <div className="provider-result-wrap" key={song.id}><article className="provider-result"><div className="provider-result-cover">{song.coverUrl ? <img src={song.coverUrl} alt="" loading="lazy" /> : <Music2 size={23} />}</div><div className="provider-result-info"><strong>{song.title}</strong><span>{song.artist} · {song.album || '未知专辑'}</span><small>{providerLabel(song.provider)} · {Math.floor(song.duration / 60)}:{Math.floor(song.duration % 60).toString().padStart(2, '0')}</small></div><div className="provider-result-actions"><button className="icon-button" disabled={!!busy} aria-label={`加入队列 ${song.title}`} title="加入播放队列" onClick={() => onEnqueue(song)}><Plus size={18} /></button><button className="icon-button" disabled={!!busy} aria-label={`查看歌词 ${song.title}`} title="查看歌词" onClick={() => void showLyrics(song)}>{busy === `lyrics:${song.id}` ? <LoaderCircle className="spin" size={18} /> : <Captions size={18} />}</button><button className="icon-button" disabled={!!busy || !song.capabilities.playback} aria-label={`在线播放 ${song.title}`} onClick={() => void run(`play:${song.id}`, async (signal) => { setStatus('正在获取歌词并解析播放地址…'); let lyrics: LyricLine[] = []; try { lyrics = await getLyrics(song, signal); } catch { signal.throwIfAborted(); } await onPlay(song, lyrics); setStatus(lyrics.length ? '已开始播放，歌词显示在播放器歌词面板。' : '已开始播放；暂未找到匹配歌词。'); })}>{busy === `play:${song.id}` ? <LoaderCircle className="spin" size={18} /> : <Play size={18} />}</button><button className="icon-button" disabled={!!busy} aria-label={`下载 ${song.title}`} title="下载 MP3" onClick={() => void download(song)}>{busy === `download:${song.id}` ? <LoaderCircle className="spin" size={18} /> : <Download size={18} />}</button></div></article>{lyricsPreview?.id === song.id && <div className="provider-lyrics-preview">{lyricsPreview.lines.length ? lyricsPreview.lines.slice(0, 8).map((line, index) => <p key={`${line.time}-${index}`}>{line.text}</p>) : <p>暂未找到匹配歌词。</p>}</div>}</div>)}
       {!results.length && <div className="provider-empty"><Music2 size={30} /><strong>发现下一首喜欢的歌</strong><span>选择平台，输入歌名或歌手开始搜索。</span></div>}
-      {more && <button className="button outline provider-more" disabled={!!busy} onClick={() => void search(page + 1)}>更多结果</button>}
+      {more && <LoadMore key={`${provider}:${submitted}:${searchRevision}`} enabled={active && !busy} cursor={page} retry={loadFailed} onLoad={() => void search(page + 1)} label={busy === 'search' ? '正在加载…' : loadFailed ? '加载失败，点击重试' : '上拉加载更多歌曲'} />}
     </div>
     <p className="provider-privacy"><ShieldCheck size={15} />账号会话在本设备加密保存。试听片段、下载失败和未完成校验的文件不会加入曲库。</p>
   </section>;

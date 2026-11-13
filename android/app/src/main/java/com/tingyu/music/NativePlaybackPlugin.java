@@ -125,7 +125,7 @@ public class NativePlaybackPlugin extends Plugin {
             android.util.AtomicFile atomic = new android.util.AtomicFile(file); FileOutputStream stream = null;
             try { stream = atomic.startWrite(); stream.write(tracks.toString().getBytes(StandardCharsets.UTF_8)); atomic.finishWrite(stream); }
             catch (Exception error) { if (stream != null) atomic.failWrite(stream); throw error; }
-            Intent intent = new Intent(getContext(), MusicPlaybackService.class).setAction("queue");
+            Intent intent = new Intent(getContext(), MusicPlaybackService.class).setAction(call.getBoolean("updateOnly", false) ? "queue-edit" : "queue");
             intent.putExtra("id", call.getString("id", ""));
             intent.putExtra("position", call.getDouble("position", 0d));
             intent.putExtra("libraryScope", call.getString("libraryScope", ""));

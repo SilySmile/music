@@ -1,8 +1,8 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import type { Track } from '../types';
 import type { PlaybackMode } from './playback';
-export type AndroidPlaybackState = { active: boolean; id?: string; playing?: boolean; position?: number; duration?: number; mode?: PlaybackMode; volume?: number; deadline?: number; finishTrack?: boolean; error?: string; cloudPlayed?: string[]; providerRecent?: unknown[] };
-type QueueOptions = { tracks: { id: string; title: string; artist: string; album: string; duration: number; sourceUrl?: string; contentUri?: string; provider?: 'qq' | 'netease'; providerTrackId?: string }[]; id: string; position: number; playing: boolean; mode: PlaybackMode; volume: number; fade: number; deadline: number; finishTrack: boolean };
+export type AndroidPlaybackState = { active: boolean; id?: string; playing?: boolean; position?: number; duration?: number; mode?: PlaybackMode; volume?: number; deadline?: number; finishTrack?: boolean; error?: string; cloudPlayed?: string[]; providerRecent?: unknown[]; queueIds?: string[] };
+type QueueOptions = { tracks: { id: string; title: string; artist: string; album: string; duration: number; sourceUrl?: string; contentUri?: string; provider?: 'qq' | 'netease'; providerTrackId?: string }[]; id: string; position: number; playing: boolean; mode: PlaybackMode; volume: number; fade: number; deadline: number; finishTrack: boolean; updateOnly?: boolean };
 export type AndroidSavedPosition = { scope?: string; id?: string; position?: number; duration?: number };
 interface PlaybackPlugin {
   notifications(): Promise<void>;

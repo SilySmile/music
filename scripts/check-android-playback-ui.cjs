@@ -28,7 +28,7 @@ async function main() {
         SecureConfig: ['loadKey'],
         AppUpdates: ['config', 'state', 'addListener', 'removeListener'],
         BackgroundTasks: ['begin', 'update', 'finish', 'sourceTasks', 'addListener', 'removeListener'],
-        MusicProviders: ['request', 'cancel'],
+        MusicProviders: ['request', 'cancel', 'saveLoginQr', 'openProviderApp'],
       };
       window.Capacitor = {
         PluginHeaders: Object.entries(methods).map(([name, list]) => ({ name, methods: list.map((name) => ({ name, rtype: name === 'addListener' ? 'callback' : 'promise' })) })),
@@ -40,7 +40,11 @@ async function main() {
           if (plugin === 'BackgroundTasks') return {};
           if (plugin === 'MusicProviders') {
             if (method === 'cancel') return {};
-            if (options.action === 'session') return { code: 0, req_0: { code: 0, data: {} } };
+            if (method === 'saveLoginQr') { localStorage.setItem('mock-qr-saved', options.image); return {}; }
+            if (method === 'openProviderApp') { localStorage.setItem('mock-provider-opened', options.provider); return {}; }
+            if (options.action === 'login-create') return { code: 0, req_0: { code: 0, data: { qrcodeID: 'android-login', qrcode: 'https://y.qq.com/fixture-login', expiresIn: 180 } } };
+            if (options.action === 'login-check') return { code: 0, req_0: { code: localStorage.getItem('mock-provider-confirmed') ? 0 : 40000, data: {} } };
+            if (options.action === 'session') return { code: 0, req_0: { code: 0, data: localStorage.getItem('mock-provider-confirmed') ? { info: { retCode: 0, nick: '安卓测试账号' } } : {} } };
             if (options.action === 'search') return { code: 0, req_0: { code: 0, data: { body: { item_song: [{ mid: 'android001', title: '安卓在线测试', singer: [{ name: '测试歌手' }], album: { name: '测试' }, interval: 36 }] } } } };
             if (options.action === 'playback') return { code: 0, req_0: { code: 0, data: { sip: ['https://ws.stream.qqmusic.qq.com/'], midurlinfo: [{ purl: 'android.wav' }] } } };
             throw Error('Unexpected provider action: ' + options.action);
@@ -54,6 +58,7 @@ async function main() {
             }
             if (method === 'cached') return { ids: options.tracks.map((track) => track.id) };
             if (method === 'setQueue') {
+              if (options.updateOnly) localStorage.setItem('mock-queue-edited', 'true');
               localStorage.setItem('mock-native-queue', JSON.stringify(options));
               localStorage.setItem('mock-native-state', JSON.stringify({ active: true, id: options.id, position: options.position, duration: 36, playing: true }));
             }
@@ -119,10 +124,23 @@ async function main() {
     await page.route('https://ws.stream.qqmusic.qq.com/**', (route) => route.fulfill({ contentType: 'audio/wav', body: bytes }));
     await page.evaluate(() => localStorage.removeItem('mock-native-queue'));
     await page.getByRole('button', { name: '在线搜索', exact: true }).click(); await page.getByLabel('搜索在线音乐').fill('测试'); await page.locator('.provider-search-form button[type=submit]').click();
+    await page.getByRole('button', { name: '扫码登录', exact: true }).click();
+    await page.getByRole('button', { name: '保存二维码并打开 App', exact: true }).click();
+    assert.match(await page.evaluate(() => localStorage.getItem('mock-qr-saved')), /^data:image\/png;base64,/);
+    assert.equal(await page.evaluate(() => localStorage.getItem('mock-provider-opened')), 'qq');
+    await page.evaluate(() => { localStorage.setItem('mock-provider-confirmed', 'true'); document.dispatchEvent(new Event('visibilitychange')); });
+    await page.getByText('安卓测试账号', { exact: true }).waitFor();
+    console.log('PASS same-phone QR save and official App launch; return immediately verifies session');
     await page.getByRole('button', { name: '在线播放 安卓在线测试', exact: true }).click();
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('mock-native-queue') || '{}').tracks?.some((item) => item.provider === 'qq'));
     const onlineQueue = await page.evaluate(() => JSON.parse(localStorage.getItem('mock-native-queue')));
     assert.equal(onlineQueue.tracks[0].providerTrackId, 'android001'); assert.equal(onlineQueue.tracks[0].sourceUrl, undefined); assert.ok(!JSON.stringify(onlineQueue).includes('https://'));
+    await page.getByRole('button', { name: '播放队列', exact: true }).click();
+    await page.getByRole('button', { name: '添加歌曲', exact: true }).click();
+    await page.locator('.queue-candidate').first().click();
+    await page.waitForFunction(() => localStorage.getItem('mock-queue-edited') === 'true');
+    assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem('mock-native-queue')))).tracks.length, 2);
+    await page.getByRole('button', { name: '关闭弹窗', exact: true }).click();
     const journal = [{ song: { provider: 'netease', id: '123456', title: '锁屏切歌记录', artist: '歌手', album: '专辑', duration: 180, capabilities: { playback: true, download: true } }, lastPlayed: Date.now() }];
     await page.evaluate((entries) => { const state = JSON.parse(localStorage.getItem('mock-native-state')); state.providerRecent = entries; localStorage.setItem('mock-native-state', JSON.stringify(state)); document.dispatchEvent(new Event('visibilitychange')); }, journal);
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('xianqiji-provider-recent-v2') || '[]').some((item) => item.song.id === '123456'));

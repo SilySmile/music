@@ -58,27 +58,54 @@ async function main() {
     });
     await page.reload();
     await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 100);
-    await page.getByRole('navigation', { name: '歌曲分页' }).waitFor();
-    await page.getByRole('button', { name: '下一页', exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('.row-index')?.textContent === '101');
-    await page.getByRole('button', { name: '下一页', exact: true }).click();
-    await page.getByRole('button', { name: '下一页', exact: true }).click();
-    await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 4);
+    for (const count of [200, 300, 304]) {
+      await page.locator('.load-more').scrollIntoViewIfNeeded();
+      await page.waitForFunction((count) => document.querySelectorAll('.track-row').length === count, count);
+    }
+    assert.equal(await page.locator('.row-index').first().textContent(), '01');
     await page.locator('.track-row').first().locator('.row-number').click();
     await page.getByRole('button', { name: '播放队列', exact: true }).click();
     assert.equal(await page.locator('.queue-row').count(), 304);
     await page.getByRole('button', { name: '关闭弹窗', exact: true }).click();
     await page.getByRole('textbox', { name: '搜索音乐', exact: true }).fill('分页样例 000');
     await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 1);
-    assert.equal(await page.getByRole('navigation', { name: '歌曲分页' }).count(), 0);
+    assert.equal(await page.locator('.load-more').count(), 0);
     await page.getByRole('button', { name: '清除搜索', exact: true }).click();
     await page.waitForFunction(() => document.querySelectorAll('.track-row').length === 100);
+    await page.getByRole('button', { name: '定位当前歌曲', exact: true }).click();
+    await page.waitForFunction(() => document.activeElement?.classList.contains('track-row'));
+    await page.getByRole('button', { name: '播放队列', exact: true }).click();
+    const secondTitle = await page.locator('.queue-row').nth(1).locator('strong').textContent();
+    await page.getByRole('button', { name: '上移 ' + secondTitle, exact: true }).click();
+    assert.equal(await page.locator('.queue-row').first().locator('strong').textContent(), secondTitle);
+    await page.getByRole('button', { name: '移出队列 ' + secondTitle, exact: true }).click();
+    assert.equal(await page.locator('.queue-row').count(), 303);
+    await page.getByRole('button', { name: '我的歌单', exact: true }).click();
+    await page.getByLabel('歌单名称', { exact: true }).fill('测试歌单');
+    await page.getByRole('button', { name: '新建歌单', exact: true }).click();
+    await page.getByRole('button', { name: '添加歌曲', exact: true }).click();
+    await page.locator('.queue-candidate').first().click();
+    await page.locator('.queue-candidate').first().click();
+    assert.equal(await page.locator('.queue-row').count(), 2);
+    await page.getByLabel('歌单名称', { exact: true }).fill('通勤歌单');
+    await page.getByRole('button', { name: '重命名', exact: true }).click();
+    await page.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+    await page.reload();
+    await page.getByRole('button', { name: '播放队列', exact: true }).click();
+    await page.getByRole('button', { name: '我的歌单', exact: true }).click();
+    await page.getByLabel('选择歌单', { exact: true }).selectOption({ label: '通勤歌单 · 2 首' });
+    assert.equal(await page.locator('.queue-row').count(), 2);
+    await page.getByRole('button', { name: '删除歌单', exact: true }).click();
+    assert.equal(await page.locator('.playlist-manager option').count(), 1);
+    await page.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+    assert.equal((await page.evaluate(() => window.tingyuDesktop.listLibraryTracks())).length, 304);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole('navigation', { name: '歌曲分页' }).scrollIntoViewIfNeeded();
+    await page.locator('.load-more').scrollIntoViewIfNeeded();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     assert.deepEqual(errors, []);
+    await page.locator('.startup-screen').waitFor({ state: 'detached' });
     await page.screenshot({ path: path.join(profile, 'mobile-pagination.png') });
-    console.log('PASS no library delete controls; favorite removal retains files; renamed audio dedup preserves file timestamp and translations; 304-song list mounts at most 100 rows; global search/full queue/mobile pagination; isolated fixtures only');
+    console.log('PASS no library delete controls; favorite removal retains files; renamed audio dedup preserves file timestamp and translations; 304-song list initially mounts 100 rows and appends on scroll; global search/full queue/mobile scrolling; isolated fixtures only');
   } finally { if (application) await application.close().catch(() => {}); }
 }
 

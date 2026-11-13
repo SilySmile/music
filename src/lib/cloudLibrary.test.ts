@@ -30,4 +30,19 @@ describe('cloud catalog entries', () => {
     expect(mergeCloudTracks([], [track])).toEqual([track]);
     expect(nativeAudioUrl(cloudTrack(record, { baseUrl: 'https://example.com', token: 'private', remember: false }, false).audio)).toBe('');
   });
+  it('reads private audio larger than the server chunk limit without saving it to the library', async () => {
+    const content = Buffer.alloc(2 * 1024 * 1024 + 3, 42);
+    const hash = createHash('sha256').update(content).digest('hex');
+    const large = { ...record, metadata: { ...record.metadata, id: hash }, audio: { ...record.audio, sha256: hash, size: content.length } };
+    const ranges: number[] = [];
+    const request: SourceRequester = async <T>(options: { path: string }) => {
+      const url = new URL(options.path, 'https://example.com');
+      const offset = Number(url.searchParams.get('offset')), length = Number(url.searchParams.get('length'));
+      expect(length).toBeLessThanOrEqual(1024 * 1024); ranges.push(length);
+      return { data: content.subarray(offset, offset + length).toString('base64'), offset, size: content.length, sha256: hash } as T;
+    };
+    const track = cloudTrack(large, { baseUrl: 'https://example.com/', token: 'private', remember: false }, false, request);
+    expect(Buffer.from(await track.audio.arrayBuffer())).toEqual(content);
+    expect(ranges).toEqual([1024 * 1024, 1024 * 1024, 3]);
+  });
 });
